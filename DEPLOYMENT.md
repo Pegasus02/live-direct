@@ -32,4 +32,4 @@ If new service fails, leave existing IPTV/direct sidecar unchanged and use their
 
 ## Publication
 
-Wait for human confirmation of GitHub repository name and visibility. Authenticated account has been checked, but no repository has been created/pushed. Review staged files and initial commit only for source and generic examples; scan for secrets/private addresses and confirm GPL-3.0 source notices + real-url conceptual acknowledgement. Do not publish this NAS-specific installation plan with private values injected; this document uses only generic/proposed paths, no credentials.
+Human confirmed public repository Pegasus02/live-direct; code is published at https://github.com/Pegasus02/live-direct . Generic Docker startup/persistence checks passed in GitHub Actions; NAS deployment and APTV acceptance remain separate. Review staged files and initial commit only for source and generic examples; scan for secrets/private addresses and confirm GPL-3.0 source notices + real-url conceptual acknowledgement. Do not publish this NAS-specific installation plan with private values injected; this document uses only generic/proposed paths, no credentials.
