@@ -2,7 +2,7 @@
 
 HTTP contract: GET /api/config -> store.get(public=True); POST /api/config
 accepts a partial object -> store.update(patch), already redacted. Config keys
-are exactly the two platform names, NOT an original NAS API configuration.
+are exactly the registered platform names, NOT an original NAS API configuration.
 Private get() is for providers only. Public responses omit sessdata and expose
 bilibili.sessdata_set (configured, not remotely validated). An omitted or empty
 sessdata preserves the current value; clear_sessdata:true explicitly clears it.
@@ -22,14 +22,27 @@ from urllib.parse import urlsplit
 
 
 DEFAULTS = {
-    "douyin": {"enabled": False, "rooms": [], "categories": [], "count": 10,
+    "douyin": {"enabled": False, "rooms": [], "share_links": [], "categories": [], "count": 10,
                "min_viewers": 0, "quality": "FULL_HD1"},
     "bilibili": {"enabled": False, "rooms": [], "areas": [], "top_per_area": 10,
                  "min_online": 0, "quality": 10000, "prefer_avc": True,
                  "sessdata": ""},
+    "douyu": {"enabled": False, "rooms": [], "categories": [], "count": 10,
+              "min_viewers": 0, "quality": 0},
+    "huya": {"enabled": False, "rooms": [], "categories": [], "count": 10,
+             "min_viewers": 0, "quality": 0},
 }
 DOUYIN_QUALITIES = ("FULL_HD1", "HD1", "SD2", "SD1")
 BILIBILI_QUALITIES = (0, 80, 150, 250, 400, 10000, 20000, 30000)
+DOUYU_QUALITIES = (0, 4, 3, 2)
+HUYA_QUALITIES = (0, 20000, 14000, 4000, 2000, 500)
+# Room ID pattern, whether IDs are positive integers, and exact official room hosts.
+ROOMS = {
+    "douyin": (r"[A-Za-z0-9_-]{1,64}", False, ("live.douyin.com",)),
+    "bilibili": (r"[0-9]{1,20}", True, ("live.bilibili.com",)),
+    "douyu": (r"[0-9]{1,12}", True, ("www.douyu.com", "douyu.com")),
+    "huya": (r"(?![gGmMlL]$)[A-Za-z0-9_-]{1,64}", False, ("www.huya.com", "huya.com")),
+}
 _MAX_BYTES = 262144
 
 
@@ -46,29 +59,49 @@ def _room(value, platform):
     if not isinstance(value, str) or len(value) > 256:
         raise ConfigError(f"{platform}.rooms: invalid room")
     value = value.strip()
-    pattern = r"[A-Za-z0-9_-]{1,64}" if platform == "douyin" else r"[0-9]{1,20}"
-    if re.fullmatch(pattern, value):
-        if platform == 'bilibili':
-            if int(value) <= 0:
-                raise ConfigError('bilibili.rooms: expected positive ID')
-            return str(int(value))
-        return value
-    try:
-        parts = urlsplit(value)
-        host = "live.douyin.com" if platform == "douyin" else "live.bilibili.com"
-        if (parts.scheme not in ("https", "http") or parts.netloc != host
-                or parts.query or parts.fragment):
-            raise ValueError
-        room = parts.path.strip("/")
-        if parts.path not in ("/" + room, "/" + room + "/") or not re.fullmatch(pattern, room):
-            raise ValueError
-        if platform == 'bilibili':
-            if int(room) <= 0:
+    pattern, numeric, hosts = ROOMS[platform]
+    if not re.fullmatch(pattern, value):
+        try:
+            parts = urlsplit(value)
+            if (parts.scheme not in ("https", "http") or parts.netloc not in hosts
+                    or parts.query or parts.fragment):
                 raise ValueError
-            return str(int(room))
-        return room
-    except ValueError:
-        raise ConfigError(f"{platform}.rooms: use a room ID or exact platform room link") from None
+            room = parts.path.strip("/")
+            if parts.path not in ("/" + room, "/" + room + "/") or not re.fullmatch(pattern, room):
+                raise ValueError
+            value = room
+        except ValueError:
+            raise ConfigError(f"{platform}.rooms: use a room ID or exact platform room link") from None
+    if numeric:
+        if int(value) <= 0:
+            raise ConfigError(f"{platform}.rooms: expected positive ID")
+        return str(int(value))
+    return value
+
+
+def _share_links(value):
+    """Extract one exact short URL per share text, without resolving any links."""
+    field = "douyin.share_links"
+    if not isinstance(value, list) or len(value) > 100:
+        raise ConfigError(f"{field}: expected a list of at most 100 items")
+    result = []
+    for item in value:
+        if (not isinstance(item, str) or len(item) > 2048
+                or any(ord(c) < 32 and c not in "\r\n\t" for c in item)):
+            raise ConfigError(f"{field}: invalid share text")
+        # Count all URL starts, not just allowed-host matches: a second URL must
+        # never be silently discarded. Also reject scheme-relative/www links.
+        starts = list(re.finditer(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//|www\.", item, re.IGNORECASE))
+        links = list(re.finditer(r"https://[^\s<>\"'（）()【】\[\]，。！？；、]+", item))
+        if (len(starts) != 1 or len(links) != 1
+                or starts[0].start() != links[0].start()
+                or (links[0].start() and re.match(r"[A-Za-z0-9_./:@%+\\-]", item[links[0].start() - 1]))
+                or not re.fullmatch(r"https://v\.douyin\.com/[A-Za-z0-9_-]+/", links[0].group())):
+            raise ConfigError(f"{field}: use one exact Douyin short URL per item")
+        link = links[0].group()
+        if link not in result:
+            result.append(link)
+    return result
 
 
 def _strings(value, field, pattern, maximum=200):
@@ -85,7 +118,7 @@ def _strings(value, field, pattern, maximum=200):
 
 def _validate(config):
     if not isinstance(config, dict) or set(config) != set(DEFAULTS):
-        raise ConfigError("config: only douyin and bilibili are allowed")
+        raise ConfigError("config: only registered platforms are allowed")
     for platform, values in config.items():
         if not isinstance(values, dict) or set(values) != set(DEFAULTS[platform]):
             raise ConfigError(f"{platform}: unknown or missing fields")
@@ -96,14 +129,23 @@ def _validate(config):
             raise ConfigError(f"{platform}.rooms: expected at most 100 rooms")
         values["rooms"] = list(dict.fromkeys(_room(room, platform) for room in rooms))
     dy, bili = config["douyin"], config["bilibili"]
-    dy["categories"] = _strings(dy["categories"], "douyin.categories", r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}", 8)
-    bili["areas"] = _strings(bili["areas"], "bilibili.areas", r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}", 16)
-    for platform, values, limit, minimum in (("douyin", dy, "count", "min_viewers"),
-                                              ("bilibili", bili, "top_per_area", "min_online")):
-        _integer(values[limit], 0, 100 if platform == "douyin" else 50, f"{platform}.{limit}")
+    dy["share_links"] = _share_links(dy["share_links"])
+    name = r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}"
+    for platform in ("douyin", "douyu", "huya"):
+        config[platform]["categories"] = _strings(config[platform]["categories"], f"{platform}.categories", name, 8)
+    bili["areas"] = _strings(bili["areas"], "bilibili.areas", name, 16)
+    for platform, limit, minimum, maximum in (("douyin", "count", "min_viewers", 100),
+                                              ("bilibili", "top_per_area", "min_online", 50),
+                                              ("douyu", "count", "min_viewers", 100),
+                                              ("huya", "count", "min_viewers", 100)):
+        values = config[platform]
+        _integer(values[limit], 0, maximum, f"{platform}.{limit}")
         _integer(values[minimum], 0, 1000000000, f"{platform}.{minimum}")
     if not isinstance(dy["quality"], str) or dy["quality"] not in DOUYIN_QUALITIES:
         raise ConfigError("douyin.quality: unsupported quality")
+    for platform, qualities in (("douyu", DOUYU_QUALITIES), ("huya", HUYA_QUALITIES)):
+        if type(config[platform]["quality"]) is not int or config[platform]["quality"] not in qualities:
+            raise ConfigError(f"{platform}.quality: unsupported quality")
     if type(bili["quality"]) is not int or bili["quality"] not in BILIBILI_QUALITIES:
         raise ConfigError("bilibili.quality: unsupported quality")
     if type(bili["prefer_avc"]) is not bool:

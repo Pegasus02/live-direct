@@ -28,6 +28,10 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('GET', '/api/config')[0], 401)
         self.assertEqual(self.req('GET', '/login')[0], 200)
         self.assertEqual(self.req('GET', '/static/style.css')[0], 200)
+        for path, typ in (('/static/icon.svg', 'image/svg+xml'), ('/static/icon-180.png', 'image/png'), ('/static/logo-douyu.png', 'image/png'), ('/static/logo-huya.png', 'image/png'), ('/favicon.ico', 'image/svg+xml')):
+            s, h, b = self.req('GET', path)
+            self.assertEqual((s, h['Content-Type']), (200, typ)); self.assertTrue(b)
+        self.assertEqual(self.req('GET', '/api/meta')[0], 401)
         s, h, _ = self.req('POST', '/login', urlencode({'admin_token': 'a'*32}), {'Content-Type':'application/x-www-form-urlencoded'})
         self.assertEqual(s,303); self.assertIn('HttpOnly',h['Set-Cookie'])
         cookie=h['Set-Cookie'].split(';')[0]
@@ -38,6 +42,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('POST','/api/config','{}',{'Cookie':cookie,'X-CSRF-Token':csrf,'Content-Type':'application/json'})[0],200)
         self.assertEqual(self.req('POST','/api/config','{}',{'Cookie':cookie,'X-CSRF-Token':csrf,'Origin':'http://evil.example'})[0],403)
         self.assertEqual(self.req('GET','/api/subscription',headers={'Cookie':cookie})[0],200)
+        self.server.app.engine.providers = {'douyu': object(), 'bilibili': object()}
+        s,h,b=self.req('GET','/api/meta',headers={'Cookie':cookie})
+        meta=json.loads(b)['platforms']
+        self.assertEqual([p['id'] for p in meta], ['douyu', 'bilibili'])
+        self.assertIn({'id': '1_2', 'name': '娱乐'}, meta[0]['categories'])
+        self.assertIn({'id': '2', 'name': '网游'}, meta[1]['categories'])
         self.assertEqual(self.req('POST','/api/logout','{}',{'Cookie':cookie})[0],403)
         s,h,b=self.req('POST','/api/logout','{}',{'Cookie':cookie,'X-CSRF-Token':csrf})
         self.assertEqual(s,204);self.assertIn('Max-Age=0',h['Set-Cookie'])
@@ -74,7 +84,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
     def test_platform_pages_share_auth_and_reject_unknown(self):
         import json
-        for path in ['/admin/douyin','/admin/bilibili']:
+        for path in ['/admin/douyin','/admin/bilibili','/admin/douyu','/admin/huya']:
             self.assertEqual(self.req('GET',path)[0],303)
         self.server.app.auth_enabled = False
         s,h,b = self.req('GET', '/static/qrcode.min.js')
@@ -105,7 +115,7 @@ class HTTPTests(unittest.TestCase):
         # Confirm store updated
         self.assertEqual(self.store.get()['bilibili']['sessdata'], 'auto_saved_sess')
 
-        for path in ['/admin','/admin/douyin','/admin/bilibili']:
+        for path in ['/admin','/admin/douyin','/admin/bilibili','/admin/douyu','/admin/huya']:
             s,h,b=self.req('GET',path)
             self.assertEqual(s,200);self.assertIn(b'<!doctype html>',b)
         self.assertEqual(self.req('GET','/admin/unknown')[0],404)

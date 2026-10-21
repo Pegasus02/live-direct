@@ -75,6 +75,109 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(room=room), self.assertRaises(ConfigError):
                 self.store.update({"douyin": {"rooms": [room]}})
 
+    def test_douyu_and_huya_schema(self):
+        result = self.store.update({"douyu": {"enabled": True, "rooms": ["https://www.douyu.com/009999", "9999", "42"],
+                                              "categories": ["娱乐", "1_1"], "quality": 4},
+                                    "huya": {"rooms": ["https://www.huya.com/vanity_1/", "880"], "count": 100, "quality": 20000}})
+        self.assertEqual(result["douyu"]["rooms"], ["9999", "42"])
+        self.assertEqual(result["huya"]["rooms"], ["vanity_1", "880"])
+        self.assertTrue(ConfigStore(self.path).get()["douyu"]["enabled"])
+        bad = [{"douyu": {"rooms": ["abc"]}}, {"douyu": {"rooms": ["0"]}}, {"douyu": {"quality": 1}},
+               {"douyu": {"quality": "0"}}, {"douyu": {"count": 101}}, {"douyu": {"areas": []}},
+               {"huya": {"rooms": ["g"]}}, {"huya": {"rooms": ["https://www.huya.com.evil.test/1"]}},
+               {"huya": {"rooms": ["https://www.huya.com/1?x=1"]}}, {"huya": {"quality": 8000}},
+               {"huya": {"categories": ["../1"]}}, {"huya": {"sessdata": "x"}}]
+        for value in bad:
+            with self.subTest(patch=value), self.assertRaises(ConfigError):
+                self.store.update(value)
+
+    def test_production_shaped_config_with_share_links_loads(self):
+        # Shape of the deployed 9541593 config: douyin.share_links, no douyu/huya keys.
+        current = {"douyin": dict(DEFAULTS["douyin"], enabled=True, rooms=["legacy_room"],
+                                  share_links=["https://v.douyin.com/Ab_12-/"]),
+                   "bilibili": dict(DEFAULTS["bilibili"], enabled=True, sessdata="existing-secret")}
+        self.path.parent.mkdir()
+        self.path.write_text(json.dumps(current))
+        loaded = ConfigStore(self.path).get()
+        self.assertEqual(loaded["douyin"], current["douyin"])
+        self.assertEqual(loaded["bilibili"], current["bilibili"])
+        self.assertEqual((loaded["douyu"], loaded["huya"]), (DEFAULTS["douyu"], DEFAULTS["huya"]))
+
+    def test_existing_two_platform_file_loads_with_new_defaults(self):
+        self.path.parent.mkdir()
+        self.path.write_text(json.dumps({"douyin": DEFAULTS["douyin"], "bilibili": DEFAULTS["bilibili"]}))
+        config = ConfigStore(self.path).get()
+        self.assertEqual(config["douyu"], DEFAULTS["douyu"])
+        self.assertFalse(config["huya"]["enabled"])
+
+    def test_old_config_without_share_links_loads_with_empty_default(self):
+        old = json.loads(json.dumps(DEFAULTS))
+        old["douyin"].pop("share_links")
+        old["douyin"]["rooms"] = ["original_room", "123"]
+        old["bilibili"]["sessdata"] = "existing-secret"
+        self.path.parent.mkdir()
+        self.path.write_text(json.dumps(old))
+        loaded = ConfigStore(self.path).get()
+        self.assertEqual(loaded["douyin"]["share_links"], [])
+        self.assertEqual(loaded["douyin"]["rooms"], old["douyin"]["rooms"])
+        self.assertEqual(loaded["bilibili"], old["bilibili"])
+
+    def test_share_links_normalize_dedupe_and_preserve_other_fields(self):
+        self.store.update({"douyin": {"rooms": ["original_room", "123"], "count": 7},
+                           "bilibili": {"rooms": ["456"], "sessdata": "existing-secret"}})
+        before = self.store.get()
+        result = self.store.update({"douyin": {"share_links": [
+            "https://v.douyin.com/Ab_12-/",
+            "  3.14 复制打开抖音，看看直播 https://v.douyin.com/Ab_12-/ 进入直播间  ",
+            "分享直播（https://v.douyin.com/Other_2/），打开抖音观看。",
+        ]}})
+        expected = ["https://v.douyin.com/Ab_12-/", "https://v.douyin.com/Other_2/"]
+        self.assertEqual(result["douyin"]["share_links"], expected)
+        self.assertEqual(result["douyin"]["rooms"], before["douyin"]["rooms"])
+        self.assertEqual(result["douyin"]["count"], 7)
+        self.assertEqual(self.store.get()["bilibili"], before["bilibili"])
+        self.assertNotIn("sessdata", result["bilibili"])
+        self.assertTrue(result["bilibili"]["sessdata_set"])
+        self.assertEqual(ConfigStore(self.path).get(), self.store.get())
+        self.store.update({"douyin": {"count": 8}})
+        self.assertEqual(self.store.get()["douyin"]["share_links"], expected)
+
+    def test_share_links_reject_malicious_or_ambiguous_values(self):
+        good = "https://v.douyin.com/Ab_12-/"
+        invalid_items = [
+            "", "Ab_12-", "http://v.douyin.com/abc/", "https://evil.test/abc/",
+            "https://v.douyin.com.evil.test/abc/", "https://v.douyin.com@evil.test/abc/",
+            "https://evil.test@v.douyin.com/abc/", "https://v.douyin.com:443/abc/",
+            "https://v.douyin.com/abc/?token=x", "https://v.douyin.com/abc/#fragment",
+            "https://v.douyin.com/abc/extra", "https://v.douyin.com/abc",
+            "https://v.douyin.com//", "https://v.douyin.com/中文/",
+            "https://v.douyin.com/a%2Fb/", "https://v.douyin.com/a\\b/",
+            "https://v.douyin.com/abc/\\@evil.test", "x" + good,
+            good + " " + good, good + " https://evil.test/", good + " http://evil.test/",
+            good + " //evil.test/path", good + " www.evil.test", good + " ftp://evil.test/",
+            "https://evil.test/?next=" + good, good + "\x00", 123, None,
+            "x" * (2049 - len(good)) + good,
+        ]
+        for item in invalid_items:
+            with self.subTest(item=item), self.assertRaises(ConfigError):
+                self.store.update({"douyin": {"share_links": [item]}})
+        for value in (None, good, {}, [good] * 101):
+            with self.subTest(value_type=type(value).__name__), self.assertRaises(ConfigError):
+                self.store.update({"douyin": {"share_links": value}})
+        self.assertEqual(self.store.get(), DEFAULTS)
+        self.assertFalse(self.path.exists())
+
+    def test_share_links_count_and_length_boundaries(self):
+        good = "https://v.douyin.com/Ab_12-/"
+        text = "文" * (2048 - len(good) - 1) + " " + good
+        self.store.update({"douyin": {"share_links": [text] * 100}})
+        self.assertEqual(self.store.get()["douyin"]["share_links"], [good])
+        links = [f"https://v.douyin.com/token_{i}/" for i in range(100)]
+        self.store.update({"douyin": {"share_links": links}})
+        self.assertEqual(self.store.get()["douyin"]["share_links"], links)
+        self.store.update({"douyin": {"share_links": []}})
+        self.assertEqual(self.store.get()["douyin"]["share_links"], [])
+
     def test_private_persistence_and_existing_permissions_repaired(self):
         self.store.update({})
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)

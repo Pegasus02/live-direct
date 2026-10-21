@@ -15,21 +15,39 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
 from .config import ConfigStore
-from .providers.douyin import Douyin
-from .providers.bilibili import Bilibili
+from .net import MEDIA_SUFFIXES as PLATFORM_MEDIA
+from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
-MEDIA_SUFFIXES = ('.douyincdn.com', '.douyinliving.com', '.bilivideo.com', '.bilivideo.cn', '.biliapi.net', '.mcdn.bilivideo.cn')
+MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
+LOGO_SUFFIXES = ('.hdslb.com', '.douyinpic.com', '.douyincdn.com', '.byteimg.com', '.douyucdn.cn', '.msstatic.com')
 
 
-def safe_media(url):
-    if not isinstance(url, str) or len(url) > 16384 or any(ord(x) <= 32 or ord(x) == 127 for x in url) or '\\' in url:
+def safe_media(url, platform=None):
+    suffixes = MEDIA_SUFFIXES if platform is None else tuple('.' + s for s in PLATFORM_MEDIA.get(platform, ()))
+    if not suffixes or not isinstance(url, str) or len(url) > 16384 or any(ord(x) <= 32 or ord(x) == 127 for x in url) or '\\' in url:
         return False
     try:
         p = urlsplit(url)
-        return p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and not p.fragment and p.hostname and p.hostname.endswith(MEDIA_SUFFIXES) and bool(p.path)
+        return p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and not p.fragment and p.hostname and p.hostname.endswith(suffixes) and bool(p.path)
     except ValueError:
         return False
+
+
+def safe_logo(url):
+    """Official avatar/cover CDN images only; upgraded to HTTPS for players."""
+    if not isinstance(url, str) or not url or len(url) > 2048 or any(ord(x) <= 32 or ord(x) == 127 or x in '"\\\'<>' for x in url):
+        return ''
+    if url.startswith('//'):
+        url = 'https:' + url
+    elif url.startswith('http://'):
+        url = 'https://' + url[7:]
+    try:
+        p = urlsplit(url)
+        ok = p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and p.hostname and p.hostname.endswith(LOGO_SUFFIXES)
+    except ValueError:
+        return ''
+    return url if ok else ''
 
 
 def clean_text(value):
@@ -39,7 +57,7 @@ def clean_text(value):
 class Engine:
     def __init__(self, store, providers=None):
         self.store = store
-        self.providers = providers or {'douyin': Douyin(), 'bilibili': Bilibili()}
+        self.providers = providers or default_providers()
         self.lock = threading.RLock()
         self.refresh_lock = threading.Lock()
         self.resolve_slots = threading.BoundedSemaphore(6)
@@ -69,19 +87,26 @@ class Engine:
             cfg = self.store.get()
             updated = {}
             health = {}
+            enabled = [p for p in self.providers if cfg[p].get('enabled')]
+            # Platforms are independent; discover them concurrently so the
+            # slower one no longer delays the other.
+            futures = {}
+            if enabled:
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(enabled))
+                futures = {p: pool.submit(self.providers[p].discover, cfg[p]) for p in enabled}
+                pool.shutdown(wait=False)
             for platform, provider in self.providers.items():
-                pc = cfg[platform]
-                if not pc.get('enabled'):
+                if platform not in futures:
                     health[platform] = {'enabled': False, 'status': 'disabled', 'count': 0}
                     continue
                 try:
-                    rows = provider.discover(pc)
+                    rows = futures[platform].result()
                     selected = {}
                     for ch in rows[:500]:
                         if ch.platform == platform and ROOM.fullmatch(str(ch.room_id)):
                             selected[(platform, str(ch.room_id))] = ch
                     updated.update(selected)
-                    health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(getattr(provider, 'warnings', []))[:20]}
+                    health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(dict.fromkeys(getattr(provider, 'warnings', [])))[:20]}
                 except Exception:
                     with self.lock:
                         old = {key: val for key, val in self.channels.items() if key[0] == platform}
@@ -138,9 +163,11 @@ class Engine:
                 if any(c.get('enabled') for c in self.store.get().values()):
                     raise RuntimeError('channels not ready')
             for (p, r), ch in self.channels.items():
-                group = '抖音' if p == 'douyin' else 'B站'
+                group = LABELS.get(p, p)
                 title = clean_text(ch.name) + (' · ' + clean_text(ch.title) if ch.title else '')
-                lines.extend([f'#EXTINF:-1 group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
+                logo = safe_logo(ch.logo)
+                attrs = f'tvg-id="{p}-{r}"' + (f' tvg-logo="{logo}"' if logo else '')
+                lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
 
     def resolve(self, platform, room):
@@ -175,7 +202,7 @@ class Engine:
         succeeded = False
         try:
             stream = self.providers[platform].resolve(room, cfg[platform])
-            if not safe_media(stream.url):
+            if not safe_media(stream.url, platform):
                 raise ValueError('invalid media')
             # A 302 does not forward source request headers to the player.
             if any(k.lower() == 'cookie' for k in stream.headers):
@@ -188,7 +215,10 @@ class Engine:
         finally:
             with self.lock:
                 if key[0] == self.generation:
-                    self.cache[key] = (time.monotonic() + (30 if succeeded else 5), stream if succeeded else None)
+                    # Providers may shorten the positive TTL (see Huya.cache_ttl); in-flight
+                    # requests for the same room are still de-duplicated via self.pending.
+                    ttl = min(30, getattr(self.providers.get(platform), 'cache_ttl', 30)) if succeeded else 5
+                    self.cache[key] = (time.monotonic() + ttl, stream if succeeded else None)
                 self.pending.pop(key, None)
                 evt.set()
                 self.resolve_slots.release()
@@ -308,12 +338,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
-        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js'}
+        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js',
+                  '/static/icon.svg': 'icon.svg', '/static/icon-180.png': 'icon-180.png',
+                  '/static/logo-douyu.png': 'logo-douyu.png', '/static/logo-huya.png': 'logo-huya.png', '/favicon.ico': 'icon.svg'}
         if self.command in ('GET', 'HEAD') and (path in admin_pages or path in assets):
             if path in admin_pages and not session:
                 return self.reply(303, headers={'Location': '/login'})
             name = 'index.html' if path in admin_pages else assets[path]
-            typ = 'text/html; charset=utf-8' if name.endswith('html') else 'text/css' if name.endswith('css') else 'application/javascript'
+            typ = {'html': 'text/html; charset=utf-8', 'css': 'text/css', 'js': 'application/javascript',
+                   'svg': 'image/svg+xml', 'png': 'image/png'}[name.rsplit('.', 1)[1]]
             return self.reply(200, (self.app.web / name).read_bytes(), typ)
         if path.startswith('/api/'):
             if not session:
@@ -323,6 +356,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(200, {'csrf': session[1], 'auth_enabled': self.app.auth_enabled})
                 if path == '/api/config':
                     return self.json_reply(200, self.app.store.get(public=True))
+                if path == '/api/meta':
+                    return self.json_reply(200, {'platforms': [
+                        {'id': p, 'label': LABELS.get(p, p),
+                         'categories': [{'id': k, 'name': v} for k, v in CATEGORIES.get(p, {}).items()]}
+                        for p in self.app.engine.providers]})
                 if path == '/api/status':
                     return self.json_reply(200, self.app.engine.status())
                 if path == '/api/channels':
@@ -438,6 +476,8 @@ def main():
         raise ValueError('ADMIN_AUTH_ENABLED must be true or false')
     app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true')
     with Server(('0.0.0.0', int(os.environ.get('PORT', '8080'))), app) as srv:
+        # Warm the channel list so the first player request is not a cold 503.
+        app.engine.start_refresh()
         srv.serve_forever()
 
 
