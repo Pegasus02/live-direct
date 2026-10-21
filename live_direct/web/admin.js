@@ -5,7 +5,9 @@
   // The server must also allow its real admin path and configuration schema.
   const PLATFORMS = [
     { id: 'douyin', name: '抖音', path: '/admin/douyin' },
-    { id: 'bilibili', name: '哔哩哔哩', path: '/admin/bilibili' }
+    { id: 'bilibili', name: '哔哩哔哩', path: '/admin/bilibili' },
+    { id: 'douyu', name: '斗鱼', path: '/admin/douyu' },
+    { id: 'huya', name: '虎牙', path: '/admin/huya' }
   ];
   const byId = id => document.getElementById(id);
   const activePlatform = PLATFORMS.find(platform => platform.path === window.location.pathname);

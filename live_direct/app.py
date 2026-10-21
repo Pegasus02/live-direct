@@ -15,19 +15,20 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
 from .config import ConfigStore
-from .providers.douyin import Douyin
-from .providers.bilibili import Bilibili
+from .net import MEDIA_SUFFIXES as PLATFORM_MEDIA
+from .providers import LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
-MEDIA_SUFFIXES = ('.douyincdn.com', '.douyinliving.com', '.bilivideo.com', '.bilivideo.cn', '.biliapi.net', '.mcdn.bilivideo.cn')
+MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
 
 
-def safe_media(url):
-    if not isinstance(url, str) or len(url) > 16384 or any(ord(x) <= 32 or ord(x) == 127 for x in url) or '\\' in url:
+def safe_media(url, platform=None):
+    suffixes = MEDIA_SUFFIXES if platform is None else tuple('.' + s for s in PLATFORM_MEDIA.get(platform, ()))
+    if not suffixes or not isinstance(url, str) or len(url) > 16384 or any(ord(x) <= 32 or ord(x) == 127 for x in url) or '\\' in url:
         return False
     try:
         p = urlsplit(url)
-        return p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and not p.fragment and p.hostname and p.hostname.endswith(MEDIA_SUFFIXES) and bool(p.path)
+        return p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and not p.fragment and p.hostname and p.hostname.endswith(suffixes) and bool(p.path)
     except ValueError:
         return False
 
@@ -39,7 +40,7 @@ def clean_text(value):
 class Engine:
     def __init__(self, store, providers=None):
         self.store = store
-        self.providers = providers or {'douyin': Douyin(), 'bilibili': Bilibili()}
+        self.providers = providers or default_providers()
         self.lock = threading.RLock()
         self.refresh_lock = threading.Lock()
         self.resolve_slots = threading.BoundedSemaphore(6)
@@ -138,7 +139,7 @@ class Engine:
                 if any(c.get('enabled') for c in self.store.get().values()):
                     raise RuntimeError('channels not ready')
             for (p, r), ch in self.channels.items():
-                group = '抖音' if p == 'douyin' else 'B站'
+                group = LABELS.get(p, p)
                 title = clean_text(ch.name) + (' · ' + clean_text(ch.title) if ch.title else '')
                 lines.extend([f'#EXTINF:-1 group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
@@ -175,7 +176,7 @@ class Engine:
         succeeded = False
         try:
             stream = self.providers[platform].resolve(room, cfg[platform])
-            if not safe_media(stream.url):
+            if not safe_media(stream.url, platform):
                 raise ValueError('invalid media')
             # A 302 does not forward source request headers to the player.
             if any(k.lower() == 'cookie' for k in stream.headers):

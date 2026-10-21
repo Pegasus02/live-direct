@@ -4,6 +4,12 @@
 
 2026-10-21: 34 tests passed (providers10, configuration10, engine/session11, real HTTP auth/CSRF/assets/subscription3). GitHub Actions run39530356657 at commit73f71f6 passed Python3.12 and3.13, JS syntax, Docker build, real non-root readonly startup, health, config0600 persistence and restart reload. First CI exposed fresh-system monotonic<120sec cold-refresh bug; fixed with explicit uninitialized detection and regression test. Exact provider/schema boundaries, positive room IDs, logout/session revocation, and cold-loading subscription Retry-After are covered. Added deterministic stale-discovery and in-flight-resolution revocation tests after independent security review. Management refresh now runs asynchronously; cold enabled subscriptions return retryable503 instead of empty-success while loading. JavaScript syntax check passed. Offline tests do not prove current platform compatibility.
 
+## Douyu / Huya (added 2026-10-21)
+
+Offline fixtures cover Douyu websec signing (MD5 rounds), betard offline/replay-loop handling, category parsing, untrusted-CDN line retry and fixed POST destination; Huya player-config and category JSON extraction without evaluation, FLV anti-code re-signing, HLS fallback, bitrate selection, offline vs. blocked pages and CDN line rotation. 45 tests pass locally (Python 3.13).
+
+NOT live-verified: the development container cannot reach douyu.com or huya.com. Endpoints and signing follow the referenced upstream implementations (akiralereal/iptv, public recorder projects) as of October 2026. Real-room resolution, 302 playback in APTV, and whether Huya FLV lines need a Referer the player cannot send all still need on-site checks.
+
 ## Live anonymous provider checks
 
 Run on the target NAS using independently staged Python modules (not a new persistent service):

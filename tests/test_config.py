@@ -75,6 +75,29 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(room=room), self.assertRaises(ConfigError):
                 self.store.update({"douyin": {"rooms": [room]}})
 
+    def test_douyu_and_huya_schema(self):
+        result = self.store.update({"douyu": {"enabled": True, "rooms": ["https://www.douyu.com/009999", "9999", "42"],
+                                              "categories": ["娱乐", "1_1"], "quality": 4},
+                                    "huya": {"rooms": ["https://www.huya.com/vanity_1/", "880"], "count": 100, "quality": 20000}})
+        self.assertEqual(result["douyu"]["rooms"], ["9999", "42"])
+        self.assertEqual(result["huya"]["rooms"], ["vanity_1", "880"])
+        self.assertTrue(ConfigStore(self.path).get()["douyu"]["enabled"])
+        bad = [{"douyu": {"rooms": ["abc"]}}, {"douyu": {"rooms": ["0"]}}, {"douyu": {"quality": 1}},
+               {"douyu": {"quality": "0"}}, {"douyu": {"count": 101}}, {"douyu": {"areas": []}},
+               {"huya": {"rooms": ["g"]}}, {"huya": {"rooms": ["https://www.huya.com.evil.test/1"]}},
+               {"huya": {"rooms": ["https://www.huya.com/1?x=1"]}}, {"huya": {"quality": 8000}},
+               {"huya": {"categories": ["../1"]}}, {"huya": {"sessdata": "x"}}]
+        for value in bad:
+            with self.subTest(patch=value), self.assertRaises(ConfigError):
+                self.store.update(value)
+
+    def test_existing_two_platform_file_loads_with_new_defaults(self):
+        self.path.parent.mkdir()
+        self.path.write_text(json.dumps({"douyin": DEFAULTS["douyin"], "bilibili": DEFAULTS["bilibili"]}))
+        config = ConfigStore(self.path).get()
+        self.assertEqual(config["douyu"], DEFAULTS["douyu"])
+        self.assertFalse(config["huya"]["enabled"])
+
     def test_private_persistence_and_existing_permissions_repaired(self):
         self.store.update({})
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)

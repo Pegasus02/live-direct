@@ -60,6 +60,10 @@ class AppTests(unittest.TestCase):
         self.assertTrue(safe_media('https://a.bilivideo.com/live.flv?x=1'))
         for u in ['https://evil.example/live.flv', 'http://a.douyincdn.com/a.flv', 'https://a.douyincdn.com@evil.example/a', 'https://a.douyincdn.com:444/a']:
             self.assertFalse(safe_media(u))
+        self.assertTrue(safe_media('https://hw-tct.douyucdn.cn/live/a.flv', 'douyu'))
+        self.assertTrue(safe_media('https://al.flv.huya.com/src/a.flv', 'huya'))
+        self.assertFalse(safe_media('https://al.flv.huya.com/src/a.flv', 'douyu'))
+        self.assertFalse(safe_media('https://a.bilivideo.com/live.flv', 'unknown'))
     def test_inflight_resolution_revoked(self):
         import threading
         entered, release = threading.Event(), threading.Event()

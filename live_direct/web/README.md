@@ -10,7 +10,7 @@ Routes served by the main application:
   session cookie, redirects to `/admin`. Failed login should use a fixed generic
   message, never reflect form values. Remote access requires HTTPS.
 - `GET /admin`: overview (all-platform status, subscription, aggregate channels).
-- `GET /admin/douyin`, `GET /admin/bilibili`: independent platform configuration/channel pages, shared `index.html` shell; current route selects only its own form card and channel metadata. Save sends only the active platform patch, never blank-overwrites other platform settings. Unknown platform paths return404. Each registered backend provider receives a matching admin route; frontend navigation/card registry must also be extended when adding a provider.
+- `GET /admin/douyin`, `GET /admin/bilibili`, `GET /admin/douyu`, `GET /admin/huya`: independent platform configuration/channel pages, shared `index.html` shell; current route selects only its own form card and channel metadata. Save sends only the active platform patch, never blank-overwrites other platform settings. Unknown platform paths return404. Each registered backend provider receives a matching admin route; frontend navigation/card registry must also be extended when adding a provider.
 - Admin routes require a session by default; explicit `ADMIN_AUTH_ENABLED=false` enables trusted-network no-login access. CSRF still required for writes; `/api/session` includes auth_enabled.
 - `GET /static/style.css`, `GET /static/admin.js`: fixed static assets; backend
   may allow login CSS publicly. Do not provide arbitrary filesystem paths.
@@ -42,7 +42,7 @@ frame-ancestors 'none'; form-action 'self'`. No inline scripts/styles required.
 
 ## Config schema
 
-Exactly `douyin` and `bilibili` top-level keys; patches may omit fields. Defaults:
+Exactly `douyin`, `bilibili`, `douyu` and `huya` top-level keys; patches may omit fields. Defaults:
 
 ```json
 {
@@ -53,6 +53,14 @@ Exactly `douyin` and `bilibili` top-level keys; patches may omit fields. Default
   "bilibili": {
     "enabled": false, "rooms": [], "areas": [], "top_per_area": 10,
     "min_online": 0, "quality": 10000, "prefer_avc": true, "sessdata": ""
+  },
+  "douyu": {
+    "enabled": false, "rooms": [], "categories": [], "count": 10,
+    "min_viewers": 0, "quality": 0
+  },
+  "huya": {
+    "enabled": false, "rooms": [], "categories": [], "count": 10,
+    "min_viewers": 0, "quality": 0
   }
 }
 ```
@@ -65,7 +73,7 @@ set and clear together is rejected. Clear flag is not persisted. Public computed
 `sessdata_set` cannot be patched. Never pass a public object to providers.
 
 Douyin quality: `FULL_HD1`, `HD1`, `SD2`, `SD1`. Bilibili quality numeric:
-`0,80,150,250,400,10000,20000,30000`. Douyin count 0–100; Bilibili top_per_area 0–50;
+`0,80,150,250,400,10000,20000,30000`. Douyu rate `0,4,3,2`; Huya bitrate `0,20000,14000,4000,2000,500`. Douyu/Huya count 0–100, max8 categories; Douyu room IDs positive numeric, Huya IDs like Douyin. Douyin count 0–100; Bilibili top_per_area 0–50;
 minimum viewers/online 0–1,000,000,000. Category/area names accept Chinese,
 ASCII letters/digits, underscore/hyphen (max64; Douyin max8 categories, Bilibili max16 areas). Room lists max100 per platform; Bilibili numeric IDs must be positive and normalize leading zeros. SESSDATA max4096 characters;
 exact official room URLs normalize to raw IDs, no query/fragment/port/userinfo.

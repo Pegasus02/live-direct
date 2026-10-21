@@ -7,9 +7,8 @@ Copyright upstream contributors; derivative distributed under GPL-3.0.
 """
 import json
 import re
-import time
-from urllib.parse import urlsplit
 
+from . import common
 from .. import net
 from ..models import Channel, Stream, ProviderError, RoomOfflineError
 
@@ -130,66 +129,20 @@ class Douyin:
             return []
         manual = list(dict.fromkeys(normalize_room(v) for v in config.get('rooms', [])[:100]))
         count = max(0, min(100, int(config.get('count', 20))))
-        categories = []
-        for category in config.get('categories', [])[:8]:
-            category = str(category)
-            cid = category if category in CATEGORIES else next((k for k, v in CATEGORIES.items() if v == category), None)
-            if cid is None:
-                raise ProviderError('Invalid Douyin category')
-            if cid not in categories:
-                categories.append(cid)
-        rows, errors = [], 0
-        deadline = time.monotonic() + 45
-        for rid in manual:
-            if time.monotonic() >= deadline:
-                self.warnings.append('Discovery time budget reached; remaining rooms deferred')
-                errors += 1
-                break
-            try:
-                rows.append(self._room(rid))
-            except RoomOfflineError:
-                continue
-            except ProviderError:
-                errors += 1
-                self.warnings.append('A manual Douyin room could not be fetched')
-        buckets = []
-        for category in categories if count else []:
-            if time.monotonic() >= deadline:
-                self.warnings.append('Discovery time budget reached; remaining categories deferred')
-                errors += 1
-                break
-            try:
-                batch = parse_category_page(self.client.fetch_text(ORIGIN + '/categorynew/4_' + category,
-                                                                  headers=HEADERS), category)
-                buckets.append(sorted((r for r in batch if r['viewers'] >= int(config.get('min_viewers', 0))),
-                                      key=lambda r: r['viewers'], reverse=True))
-            except ProviderError:
-                errors += 1
-                self.warnings.append('A Douyin category could not be fetched')
-        channels, seen = [], set()
-        def add(row):
-            if row['key'] in seen:
-                return False
+        categories = common.category_ids(config.get('categories', []), CATEGORIES, 'Douyin')
+
+        def category(cid):
+            return parse_category_page(self.client.fetch_text(ORIGIN + '/categorynew/4_' + cid, headers=HEADERS), cid)
+
+        def accept(row):
             try:
                 select_stream(row['streams'], config.get('quality', 'HD1'))
+                return True
             except ProviderError:
                 self.warnings.append('A Douyin room has no trusted stream')
                 return False
-            channels.append(Channel('douyin', row['id'], row['name'], row['title'], row['logo']))
-            seen.add(row['key'])
-            return True
-        for row in rows:
-            add(row)
-        added = 0
-        # Balanced round-robin among chosen categories, highest-popularity head first.
-        while any(buckets) and added < count:
-            for bucket in sorted((b for b in buckets if b), key=lambda b: b[0]['viewers'], reverse=True):
-                if added >= count:
-                    break
-                added += int(add(bucket.pop(0)))
-        if not channels and errors:
-            raise ProviderError('Douyin discovery failed')
-        return channels
+        return common.discover('douyin', 'Douyin', self.warnings, manual, self._room, categories, category,
+                               count, int(config.get('min_viewers', 0)), accept)
 
     def resolve(self, room_id, config):
         row = self._room(normalize_room(room_id))

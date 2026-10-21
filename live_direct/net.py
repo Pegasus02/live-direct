@@ -4,15 +4,20 @@ import json
 import socket
 import ssl
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from .models import ProviderError
 
-API_HOSTS = frozenset({'live.douyin.com', 'api.live.bilibili.com', 'passport.bilibili.com'})
+API_HOSTS = frozenset({'live.douyin.com', 'api.live.bilibili.com', 'passport.bilibili.com',
+                       'www.douyu.com', 'playweb.douyucdn.cn', 'www.huya.com'})
 MEDIA_SUFFIXES = {
     'douyin': ('douyinliving.com', 'douyincdn.com'),
     'bilibili': ('bilivideo.com', 'bilivideo.cn', 'biliapi.net'),
+    'douyu': ('douyucdn.cn', 'douyucdn2.cn'),
+    'huya': ('huya.com',),
 }
+# Only the fixed Douyu play API takes a form body; every other endpoint is GET.
+POST_HOSTS = frozenset({'playweb.douyucdn.cn'})
 TIMEOUT = 10
 MAX_BYTES = 5_000_000
 
@@ -46,11 +51,13 @@ def media_url(url, platform, format):
         raise ProviderError('Untrusted media URL') from None
 
 
-def _fetch(url, headers=None, return_headers=False):
+def _fetch(url, headers=None, return_headers=False, form=None):
     p = validate_url(url)
+    if form is not None and p.hostname not in POST_HOSTS:
+        raise ProviderError('Form destination rejected')
     clean_headers = {'User-Agent': 'Mozilla/5.0 LiveDirect/1.0', 'Accept-Encoding': 'identity'}
     for key, value in (headers or {}).items():
-        if key.lower() not in ('user-agent', 'accept', 'accept-language', 'referer', 'cookie'):
+        if key.lower() not in ('user-agent', 'accept', 'accept-language', 'referer', 'cookie', 'origin'):
             raise ProviderError('Unsupported request header')
         if not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ProviderError('Invalid request header')
@@ -60,7 +67,12 @@ def _fetch(url, headers=None, return_headers=False):
     connection = http.client.HTTPSConnection(p.hostname, timeout=TIMEOUT, context=ssl.create_default_context())
     try:
         deadline = time.monotonic() + TIMEOUT
-        connection.request('GET', p.path + ('?' + p.query if p.query else ''), headers=clean_headers)
+        body = None
+        if form is not None:
+            body = urlencode(form).encode()
+            clean_headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        connection.request('GET' if body is None else 'POST', p.path + ('?' + p.query if p.query else ''),
+                           body=body, headers=clean_headers)
         transport = connection.sock
         if transport:
             transport.settimeout(max(0.001, deadline - time.monotonic()))
@@ -100,8 +112,8 @@ def fetch_text(url, headers=None):
     return _fetch(url, headers)
 
 
-def fetch_json(url, headers=None):
-    text = _fetch(url, headers)
+def fetch_json(url, headers=None, form=None):
+    text = _fetch(url, headers, form=form)
     try:
         return json.loads(text)
     except (ValueError, RecursionError):
@@ -112,7 +124,5 @@ def fetch_json_with_headers(url, headers=None):
     resp_headers, text = _fetch(url, headers, return_headers=True)
     try:
         return resp_headers, json.loads(text)
-    except (ValueError, RecursionError):
-        raise ProviderError('Invalid upstream JSON') from None
     except (ValueError, RecursionError):
         raise ProviderError('Invalid upstream JSON') from None

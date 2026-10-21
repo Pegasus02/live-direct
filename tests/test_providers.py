@@ -1,3 +1,4 @@
+import base64
 import json
 import unittest
 from unittest.mock import patch
@@ -6,6 +7,8 @@ from live_direct import net
 from live_direct.models import ProviderError, RoomOfflineError
 from live_direct.providers.douyin import Douyin, flight_data, normalize_room as dy_room, select_stream as dy_stream
 from live_direct.providers.bilibili import Bilibili, normalize_room as bili_room, select_stream
+from live_direct.providers import douyu, huya
+from live_direct.providers.common import assigned_json, parse_heat
 
 
 def flight(value):
@@ -32,9 +35,11 @@ class Fake:
     def __init__(self, responses):
         self.responses = responses
         self.calls = []
+        self.forms = []
 
-    def _fetch(self, url, headers):
+    def _fetch(self, url, headers, form=None):
         self.calls.append((url, headers))
+        self.forms.append(form)
         for key, value in self.responses.items():
             if key in url:
                 if isinstance(value, Exception):
@@ -42,8 +47,8 @@ class Fake:
                 return value
         raise AssertionError('Unexpected fixture request')
 
-    def fetch_json(self, url, headers=None):
-        return self._fetch(url, headers)
+    def fetch_json(self, url, headers=None, form=None):
+        return self._fetch(url, headers, form)
 
     def fetch_text(self, url, headers=None):
         return self._fetch(url, headers)
@@ -60,6 +65,8 @@ class ProvidersTest(unittest.TestCase):
         client = Fake({})
         self.assertEqual(Douyin(client).discover({}), [])
         self.assertEqual(Bilibili(client).discover({}), [])
+        self.assertEqual(douyu.Douyu(client).discover({}), [])
+        self.assertEqual(huya.Huya(client).discover({}), [])
         self.assertEqual(client.calls, [])
 
     def test_room_input_boundaries(self):
@@ -164,6 +171,117 @@ class ProvidersTest(unittest.TestCase):
         with self.assertRaises(ProviderError):
             provider.qrcode_poll('bad;inject')
 
+    def test_douyu_manual_category_and_signed_flv(self):
+        betard = {'room': {'room_id': 9999, 'show_status': 1, 'videoLoop': 0,
+                           'nickname': 'Fixture &amp; anchor', 'room_name': 'Fixture title'}}
+        listing = {'code': 0, 'data': {'rl': [{'rid': 9999, 'nn': 'dup', 'ol': 9},
+                                              {'rid': 42, 'nn': 'Hot', 'rn': 'Room', 'ol': 500},
+                                              {'rid': 'bad/1', 'ol': 900}, {'rid': 7, 'ol': 3}]}}
+        key = {'error': 0, 'data': {'rand_str': 'r', 'key': 'k', 'enc_time': 2, 'enc_data': 'e', 'is_special': 0}}
+        play = {'error': 0, 'data': {'rtmp_url': 'http://hw-tct.douyucdn.cn/live',
+                                     'rtmp_live': '9999r_2000.flv?wsAuth=fixture&token=x'}}
+        client = Fake({'/betard/': betard, '/mixListV1/1_2/1': listing, '/getEncryption': key, '/getH5PlayV1/9999': play})
+        provider = douyu.Douyu(client)
+        channels = provider.discover({'enabled': True, 'rooms': ['https://www.douyu.com/09999'],
+                                      'categories': ['娱乐'], 'count': 2, 'min_viewers': 5})
+        self.assertEqual([(c.room_id, c.name) for c in channels], [('9999', 'Fixture & anchor'), ('42', 'Hot')])
+        stream = provider.resolve('9999', {'quality': 0})
+        self.assertEqual((stream.format, stream.quality), ('flv', '2000'))
+        self.assertEqual(stream.url, 'https://hw-tct.douyucdn.cn/live/9999r_2000.flv?wsAuth=fixture&token=x')
+        form = client.forms[-1]
+        self.assertEqual((form['rid'], form['rate'], form['did']), ('9999', '0', douyu.DID))
+        import hashlib
+        md5 = lambda t: hashlib.md5(t.encode()).hexdigest()
+        self.assertEqual(form['auth'], md5(md5(md5('rk') + 'k') + 'k' + '9999' + form['tt']))
+        self.assertTrue(all(url.startswith(('https://www.douyu.com/', 'https://playweb.douyucdn.cn/'))
+                            for url, _ in client.calls))
+        self.assertNotIn('wsAuth', repr(stream))
+
+    def test_douyu_offline_loop_untrusted_cdn_and_bad_input(self):
+        for room in ({'room_id': 1, 'show_status': 2}, {'room_id': 1, 'show_status': 1, 'videoLoop': 1}):
+            with self.assertRaises(RoomOfflineError):
+                douyu.parse_room({'room': room})
+        with self.assertRaises(ProviderError) as e:
+            douyu.parse_room({'error': 'blocked'})
+        self.assertNotIsInstance(e.exception, RoomOfflineError)
+        key = {'error': 0, 'data': {'rand_str': 'r', 'key': 'k', 'enc_time': 0, 'enc_data': 'e', 'is_special': 1}}
+        evil = {'error': 0, 'data': {'rtmp_url': 'https://evil.test/live', 'rtmp_live': 'a.flv',
+                                     'rtmp_cdn': 'bad', 'cdnsWithName': [{'cdn': 'bad'}, {'cdn': 'ok/../x'}]}}
+        client = Fake({'/betard/': {'room': {'room_id': 1, 'show_status': 1}}, '/getEncryption': key, '/getH5PlayV1/': evil})
+        with self.assertRaises(ProviderError):
+            douyu.Douyu(client).resolve('1', {})
+        self.assertEqual(sum('/getH5PlayV1/' in url for url, _ in client.calls), 1)
+        for bad in ['https://www.douyu.com.evil.test/1', 'https://www.douyu.com/1?x=2', 'abc', '0', 'https://www.douyu.com/']:
+            with self.subTest(bad=bad), self.assertRaises(ProviderError):
+                douyu.normalize_room(bad)
+        with self.assertRaises(ProviderError):
+            douyu.sign({'rand_str': 'r', 'key': 'k', 'enc_time': 10**6, 'enc_data': 'e'}, '1', 1)
+        with self.assertRaises(ProviderError):
+            douyu.Douyu(Fake({})).discover({'enabled': True, 'categories': ['unknown']})
+
+    def huya_page(self, lines=None, bitrates=None, live=True):
+        fm = base64.b64encode(b'prefix_$0_$1_$2_$3').decode()
+        line = {'sCdnType': 'AL', 'sStreamName': '1-2-abc', 'sFlvUrl': 'http://al.flv.huya.com/src',
+                'sFlvUrlSuffix': 'flv', 'sFlvAntiCode': 'wsSecret=old&amp;wsTime=65f0a1b2&fm=' + fm + '&ctype=huya_live&fs=bgct',
+                'sHlsUrl': 'http://al.hls.huya.com/src', 'sHlsUrlSuffix': 'm3u8', 'sHlsAntiCode': 'wsTime=65f0a1b2&fm=' + fm}
+        stream = {'data': [{'gameLiveInfo': {'profileRoom': 880, 'uid': 1234, 'nick': 'Fixture', 'introduction': 'A "}" title'},
+                            'gameStreamInfoList': (lines if lines is not None else [line]) if live else []}],
+                  'vMultiStreamInfo': bitrates or [{'iBitRate': 0}, {'iBitRate': 4000}, {'iBitRate': 14100, 'iCompatibleFlag': 1}]}
+        return '<script>var hyPlayerConfig = {html5: 1, stream: ' + json.dumps(stream) + ', other: {a: 1}};</script>', line
+
+    def test_huya_room_page_signed_flv_and_rotation(self):
+        page, line = self.huya_page()
+        second = dict(line, sCdnType='TX', sFlvUrl='https://tx.flv.huya.com/src')
+        page, _ = self.huya_page([line, second])
+        room = huya.parse_room_page(page, 'vanity')
+        self.assertEqual((room['id'], room['title'], room['uid']), ('880', 'A "}" title', '1234'))
+        stream = huya.select_stream(room, 0, now_ms=1700000000000)
+        self.assertEqual((stream.format, stream.quality), ('flv', 'origin'))
+        self.assertTrue(stream.url.startswith('https://al.flv.huya.com/src/1-2-abc.flv?wsSecret='))
+        import hashlib
+        md5 = lambda t: hashlib.md5(t.encode()).hexdigest()
+        secret = md5('prefix_1234_1-2-abc_' + md5('1700000000000|huya_live|100') + '_65f0a1b2')
+        self.assertIn('wsSecret=' + secret + '&wsTime=65f0a1b2&seqid=1700000000000&ctype=huya_live&ver=1&fs=bgct&u=1234&t=100', stream.url)
+        self.assertNotIn('fm=', stream.url)
+        self.assertIn('&ratio=4000&', huya.select_stream(room, 4000).url)
+        provider = huya.Huya(Fake({'/vanity': page}))
+        hosts = [provider.resolve('vanity', {}).url.split('/')[2] for _ in range(3)]
+        self.assertEqual(hosts, ['al.flv.huya.com', 'tx.flv.huya.com', 'al.flv.huya.com'])
+
+    def test_huya_hls_fallback_offline_and_blocked(self):
+        _, line = self.huya_page()
+        page, _ = self.huya_page([dict(line, sFlvUrl='https://evil.test/src')])
+        self.assertEqual(huya.select_stream(huya.parse_room_page(page, '880')).format, 'hls')
+        with self.assertRaises(RoomOfflineError):
+            huya.parse_room_page(self.huya_page(live=False)[0], '880')
+        with self.assertRaises(RoomOfflineError):
+            huya.parse_room_page('<script>var hyPlayerConfig = {stream: ""};</script>', '880')
+        with self.assertRaises(ProviderError) as e:
+            huya.Huya(Fake({'/880': '<html>verify</html>'})).resolve('880', {})
+        self.assertNotIsInstance(e.exception, RoomOfflineError)
+        for bad in ['g', 'https://www.huya.com.evil.test/1', 'https://www.huya.com/1?x=1', 'a/b']:
+            with self.subTest(bad=bad), self.assertRaises(ProviderError):
+                huya.normalize_room(bad)
+
+    def test_huya_bitrates_and_category_page(self):
+        rows = [{'iBitRate': 0}, {'iBitRate': 20000}, {'iBitRate': 14000}, {'iBitRate': 4000}, {'iBitRate': 2000}]
+        self.assertEqual([huya.select_bitrate(rows, q) for q in (0, 14000, 2000, 500)], [20000, 14000, 2000, 2000])
+        self.assertEqual(huya.select_bitrate([{'iBitRate': 4000}], 20000), 0)
+        self.assertEqual(huya.select_bitrate([{'iBitRate': 4000}], 0), 0)
+        page = ('<script>var ALL_LIST_DATA = ' + json.dumps([
+            {'lProfileRoom': 1, 'sNick': 'A', 'lTotalCount': 10}, {'lProfileRoom': 2, 'sNick': 'B', 'lTotalCount': 900},
+            {'lProfileRoom': '../x', 'lTotalCount': 9999}]) + ';</script>')
+        provider = huya.Huya(Fake({'/g/100023': page}))
+        channels = provider.discover({'enabled': True, 'categories': ['网游'], 'count': 1})
+        self.assertEqual([c.room_id for c in channels], ['2'])
+
+    def test_shared_helpers(self):
+        self.assertEqual([parse_heat(v) for v in ('12.5万', '1亿', '3,200', None, True, 7)], [125000, 100000000, 3200, 0, 0, 7])
+        self.assertEqual(assigned_json('x = {"a": "]}", "b": [1]};', 4), {'a': ']}', 'b': [1]})
+        for bad in ('{"a": 1', 'alert(1)', '{a: 1}'):
+            with self.assertRaises(ProviderError):
+                assigned_json(bad, 0)
+
     def test_network_api_and_media_boundaries(self):
         for url in ['http://api.live.bilibili.com/a', 'https://127.0.0.1/a',
                     'https://api.live.bilibili.com.evil.test/a', 'https://api.live.bilibili.com:444/a']:
@@ -176,6 +294,11 @@ class ProvidersTest(unittest.TestCase):
                 net.media_url(url, 'bilibili', 'flv')
         with self.assertRaises(ProviderError):
             net.fetch_text('https://live.douyin.com/', {'Cookie': 'secret'})
+        with self.assertRaises(ProviderError):
+            net.fetch_json('https://www.douyu.com/lapi/x', form={'a': '1'})
+        with self.assertRaises(ProviderError):
+            net.media_url('https://a.douyucdn.cn/live/x.flv', 'huya', 'flv')
+        self.assertTrue(net.media_url('http://a.douyucdn2.cn/live/x.flv?a=1', 'douyu', 'flv').startswith('https://'))
 
     def test_network_rejects_redirects_and_limits_body(self):
         class Response:

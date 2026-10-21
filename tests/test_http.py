@@ -74,7 +74,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
     def test_platform_pages_share_auth_and_reject_unknown(self):
         import json
-        for path in ['/admin/douyin','/admin/bilibili']:
+        for path in ['/admin/douyin','/admin/bilibili','/admin/douyu','/admin/huya']:
             self.assertEqual(self.req('GET',path)[0],303)
         self.server.app.auth_enabled = False
         s,h,b = self.req('GET', '/static/qrcode.min.js')
@@ -105,7 +105,7 @@ class HTTPTests(unittest.TestCase):
         # Confirm store updated
         self.assertEqual(self.store.get()['bilibili']['sessdata'], 'auto_saved_sess')
 
-        for path in ['/admin','/admin/douyin','/admin/bilibili']:
+        for path in ['/admin','/admin/douyin','/admin/bilibili','/admin/douyu','/admin/huya']:
             s,h,b=self.req('GET',path)
             self.assertEqual(s,200);self.assertIn(b'<!doctype html>',b)
         self.assertEqual(self.req('GET','/admin/unknown')[0],404)
