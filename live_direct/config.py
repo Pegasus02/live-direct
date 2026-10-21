@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 
 
 DEFAULTS = {
-    "douyin": {"enabled": False, "rooms": [], "categories": [], "count": 10,
+    "douyin": {"enabled": False, "rooms": [], "share_links": [], "categories": [], "count": 10,
                "min_viewers": 0, "quality": "FULL_HD1"},
     "bilibili": {"enabled": False, "rooms": [], "areas": [], "top_per_area": 10,
                  "min_online": 0, "quality": 10000, "prefer_avc": True,
@@ -71,6 +71,31 @@ def _room(value, platform):
         raise ConfigError(f"{platform}.rooms: use a room ID or exact platform room link") from None
 
 
+def _share_links(value):
+    """Extract one exact short URL per share text, without resolving any links."""
+    field = "douyin.share_links"
+    if not isinstance(value, list) or len(value) > 100:
+        raise ConfigError(f"{field}: expected a list of at most 100 items")
+    result = []
+    for item in value:
+        if (not isinstance(item, str) or len(item) > 2048
+                or any(ord(c) < 32 and c not in "\r\n\t" for c in item)):
+            raise ConfigError(f"{field}: invalid share text")
+        # Count all URL starts, not just allowed-host matches: a second URL must
+        # never be silently discarded. Also reject scheme-relative/www links.
+        starts = list(re.finditer(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//|www\.", item, re.IGNORECASE))
+        links = list(re.finditer(r"https://[^\s<>\"'（）()【】\[\]，。！？；、]+", item))
+        if (len(starts) != 1 or len(links) != 1
+                or starts[0].start() != links[0].start()
+                or (links[0].start() and re.match(r"[A-Za-z0-9_./:@%+\\-]", item[links[0].start() - 1]))
+                or not re.fullmatch(r"https://v\.douyin\.com/[A-Za-z0-9_-]+/", links[0].group())):
+            raise ConfigError(f"{field}: use one exact Douyin short URL per item")
+        link = links[0].group()
+        if link not in result:
+            result.append(link)
+    return result
+
+
 def _strings(value, field, pattern, maximum=200):
     if not isinstance(value, list) or len(value) > maximum:
         raise ConfigError(f"{field}: expected a list of at most {maximum} items")
@@ -96,6 +121,7 @@ def _validate(config):
             raise ConfigError(f"{platform}.rooms: expected at most 100 rooms")
         values["rooms"] = list(dict.fromkeys(_room(room, platform) for room in rooms))
     dy, bili = config["douyin"], config["bilibili"]
+    dy["share_links"] = _share_links(dy["share_links"])
     dy["categories"] = _strings(dy["categories"], "douyin.categories", r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}", 8)
     bili["areas"] = _strings(bili["areas"], "bilibili.areas", r"[A-Za-z0-9_\-\u4e00-\u9fff]{1,64}", 16)
     for platform, values, limit, minimum in (("douyin", dy, "count", "min_viewers"),

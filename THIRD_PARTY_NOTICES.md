@@ -14,7 +14,7 @@ This project is not endorsed by the upstream authors.
 Project: https://github.com/wbt5/real-url
 License of that separate project: GNU GPL version 2.
 
-Special thanks for the idea and educational demonstration of resolving live-room playback URLs for external players. No real-url source code is incorporated in this application. The acknowledgement is conceptual and is not a claim that GPL-2.0-only code is relicensed under GPL-3.0. If source from it is ever incorporated, compatibility and obligations must be reviewed first.
+Special thanks for the idea and educational demonstration of resolving live-room playback URLs for external players, including the Douyin share-redirect / public reflow API approach in `douyin.py` at revision `b6daf0abcd445b6ede76221a7d2aac383bc87a2e`. Live Direct independently implements that observed protocol with Python standard-library HTTP, strict destination validation, bounded redirects, separate configuration, identity checks and tests. No real-url source code is incorporated in this application. The acknowledgement is conceptual/protocol reference and is not a claim that GPL-2.0-only code is relicensed under GPL-3.0. If source from it is ever incorporated, compatibility and obligations must be reviewed first.
 
 ## Platforms and trademarks
 

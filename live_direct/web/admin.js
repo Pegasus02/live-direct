@@ -4,8 +4,8 @@
   // Add a platform here and its data-platform configuration card to extend navigation.
   // The server must also allow its real admin path and configuration schema.
   const PLATFORMS = [
-    { id: 'douyin', name: '抖音', path: '/admin/douyin' },
-    { id: 'bilibili', name: '哔哩哔哩', path: '/admin/bilibili' }
+    { id: 'douyin', name: '抖音', path: '/admin/douyin', fields: { share_links: 'lines', categories: 'list' } },
+    { id: 'bilibili', name: '哔哩哔哩', path: '/admin/bilibili', fields: { rooms: 'list', areas: 'list' } }
   ];
   const byId = id => document.getElementById(id);
   const activePlatform = PLATFORMS.find(platform => platform.path === window.location.pathname);
@@ -77,7 +77,7 @@
         const input = byId(`${platform.id}-${key.replaceAll('_', '-')}`);
         if (!input) continue;
         if (input.type === 'checkbox') input.checked = value === true;
-        else input.value = Array.isArray(value) ? value.join(key === 'rooms' ? '\n' : ', ') : String(value);
+        else input.value = Array.isArray(value) ? value.join(key === 'rooms' || platform.fields[key] === 'lines' ? '\n' : ', ') : String(value);
       }
     }
     byId('bilibili-sessdata').value = '';
@@ -90,7 +90,9 @@
     const values = {};
     for (const input of activeCard.querySelectorAll('[data-config-key]')) {
       const key = input.dataset.configKey;
-      if (input.dataset.valueType === 'list') values[key] = input.value.split(/[\s,，]+/u).filter(Boolean);
+      const valueType = activePlatform.fields[key] || input.dataset.valueType;
+      if (valueType === 'lines') values[key] = input.value.split(/\r\n|[\r\n]/u).map(line => line.trim()).filter(Boolean);
+      else if (valueType === 'list') values[key] = input.value.split(/[\s,，]+/u).filter(Boolean);
       else if (input.type === 'checkbox') values[key] = input.checked;
       else if (input.type === 'number' || input.dataset.valueType === 'number') values[key] = Number(input.value);
       else values[key] = input.value;
@@ -167,18 +169,27 @@
     finally { lock(false); }
   });
   byId('clear-sessdata').addEventListener('change', event => { byId('bilibili-sessdata').disabled = activePlatform?.id !== 'bilibili' || event.target.checked; byId('bilibili-sessdata').value = ''; });
+  // Sequential polling (setTimeout chain) so slow responses never overlap.
   let qrPollTimer = null;
+  let qrSession = 0;
   function stopQrPoll() {
-    if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+    qrSession++;
+    if (qrPollTimer) { clearTimeout(qrPollTimer); qrPollTimer = null; }
   }
   const qrBtn = byId('bilibili-qr-btn');
   const qrBox = byId('bilibili-qr-box');
   const qrCodeDiv = byId('bilibili-qr-code');
   const qrStatus = byId('bilibili-qr-status');
   const qrCancel = byId('bilibili-qr-cancel');
+  function qrFinish(message) {
+    stopQrPoll();
+    if (message) qrStatus.textContent = message;
+    qrBtn.disabled = false;
+  }
   if (qrBtn && qrBox) {
     qrBtn.addEventListener('click', async () => {
       stopQrPoll();
+      const session = qrSession;
       qrBox.hidden = false;
       qrBtn.disabled = true;
       qrStatus.textContent = '正在获取登录二维码…';
@@ -186,6 +197,7 @@
       try {
         const data = await api('/api/bilibili/qrcode/generate', {});
         if (!data.url || !data.qrcode_key) throw new Error('生成二维码失败');
+        if (session !== qrSession) return;
         if (typeof qrcode !== 'undefined') {
           const qr = qrcode(0, 'M');
           qr.addData(data.url);
@@ -198,35 +210,38 @@
         }
         qrStatus.textContent = '请打开哔哩哔哩手机客户端扫码';
         let count = 0;
-        qrPollTimer = setInterval(async () => {
-          count++;
-          if (count > 90) {
-            stopQrPoll();
-            qrStatus.textContent = '二维码已失效，请重新生成';
-            qrBtn.disabled = false;
-            return;
-          }
+        let failures = 0;
+        const tick = async () => {
+          if (session !== qrSession) return;
+          if (++count > 90) return qrFinish('二维码已失效，请重新生成');
           try {
             const poll = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key });
+            if (session !== qrSession) return;
+            failures = 0;
             if (poll.status === 'success') {
-              stopQrPoll();
+              qrFinish('');
               qrBox.hidden = true;
-              qrBtn.disabled = false;
               notify('Bilibili 扫码登录成功！已自动保存凭据并刷新高画质频道。');
+              fill(await api('/api/config'));
               byId('secret-state').textContent = '已配置 · 扫码登录';
               await overview();
-            } else if (poll.status === 'scanned') {
-              qrStatus.textContent = '手机已扫码，请在客户端确认登录';
-            } else if (poll.status === 'expired') {
-              stopQrPoll();
-              qrStatus.textContent = '二维码已失效，请重新生成';
-              qrBtn.disabled = false;
+              return;
             }
-          } catch (_) {}
-        }, 2000);
+            if (poll.status === 'expired') return qrFinish('二维码已失效，请重新生成');
+            if (poll.status === 'error') return qrFinish(safeText(poll.message, '登录未完成，请重新生成二维码'));
+            if (poll.status === 'scanned') qrStatus.textContent = '手机已扫码，请在客户端确认登录';
+          } catch (_) {
+            // A late failure from a cancelled/replaced round must not touch the current one.
+            if (session !== qrSession) return;
+            if (++failures >= 5) return qrFinish('状态查询多次失败，请重新生成二维码');
+          }
+          if (session !== qrSession) return;
+          qrPollTimer = setTimeout(tick, 2000);
+        };
+        qrPollTimer = setTimeout(tick, 2000);
       } catch (err) {
-        qrStatus.textContent = err.message || '获取失败';
-        qrBtn.disabled = false;
+        if (session !== qrSession) return;
+        qrFinish(err.message || '获取失败');
       }
     });
   }
