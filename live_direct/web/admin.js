@@ -416,6 +416,8 @@
     return section('画质偏好', '实际画质取决于直播间可用档位，未登录时平台可能降档。HTTP-FLV 优先，没有时回退 HLS。', group, extra);
   }
   const qr = { session: 0, owner: 0, timer: null };
+  // Set by the current login editor; updates its status badge and clear option in place.
+  let syncLoginStatus = () => {};
   // Invalidates any running QR session and its pending poll.
   function stopQr() {
     qr.session += 1;
@@ -438,6 +440,7 @@
       status.replaceWith(status = pill(configured ? { key: 'ok', label: '已保存 · 有效性未验证' } : { key: 'off', label: '未配置 · 匿名模式' }));
       clear.disabled = !configured;
     };
+    syncLoginStatus = () => showStatus(Boolean(state.config?.[platform.id]?.sessdata_set));
     // Every start/cancel/re-render bumps qr.session; a response from an older
     // session is ignored, so it can neither re-enable the button nor stop the
     // current session's polling. Polls are serial: the next one is scheduled
@@ -637,6 +640,7 @@
           const secret = byId('bilibili-sessdata'); if (secret) { secret.value = ''; secret.disabled = false; }
           const clear = byId('clear-sessdata'); if (clear) clear.checked = false;
         }
+        if (active.login) syncLoginStatus();
         updateDirty();
         toast('已保存提交时的内容；之后的修改仍未保存。', 'success');
       }
