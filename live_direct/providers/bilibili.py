@@ -7,10 +7,11 @@ No real-url GPL-2.0 implementation copied.
 """
 import re
 import time
-from urllib.parse import urlencode, urlsplit, parse_qs
+from urllib.parse import urlencode
 
 from .. import net
 from ..models import Channel, Stream, ProviderError, RoomOfflineError
+from ._pool import fan_out
 
 API = 'https://api.live.bilibili.com'
 PASSPORT_API = 'https://passport.bilibili.com'
@@ -106,27 +107,35 @@ class Bilibili:
             return []
         channels, seen, errors = [], set(), 0
         deadline = time.monotonic() + 45
-        manual = list(dict.fromkeys(normalize_room(v) for v in config.get('rooms', [])[:100]))
-        def add(rid, name='', logo=''):
+
+        def warn(message):
+            if message not in self.warnings:
+                self.warnings.append(message)
+
+        def add(channel):
+            if channel.room_id not in seen:
+                channels.append(channel)
+                seen.add(channel.room_id)
+
+        def failed(error, message):
             nonlocal errors
-            if time.monotonic() >= deadline:
-                errors += 1
-                if 'Discovery time budget reached' not in self.warnings:
-                    self.warnings.append('Discovery time budget reached')
+            if isinstance(error, RoomOfflineError):
                 return
-            try:
-                channel = self._room(rid, config)
-                if channel.room_id not in seen:
-                    channels.append(Channel(channel.platform, channel.room_id, name or channel.name,
-                                            channel.title, logo or channel.logo))
-                    seen.add(channel.room_id)
-            except RoomOfflineError:
-                pass
-            except ProviderError:
+            if isinstance(error, TimeoutError):
                 errors += 1
-                self.warnings.append('A Bilibili room could not be fetched')
-        for rid in manual:
-            add(rid)
+                warn('Discovery time budget reached')
+            elif isinstance(error, ProviderError):
+                errors += 1
+                warn(message)
+            else:
+                raise error
+
+        manual = list(dict.fromkeys(normalize_room(v) for v in config.get('rooms', [])[:100]))
+        for _, channel, error in fan_out(lambda rid: self._room(rid, config), manual, deadline):
+            if error is None:
+                add(channel)
+            else:
+                failed(error, 'A Bilibili room could not be fetched')
         areas = list(dict.fromkeys(str(v) for v in config.get('areas', [])[:16]))
         count = max(0, min(50, int(config.get('top_per_area', 5))))
         if areas and count:
@@ -136,51 +145,61 @@ class Bilibili:
                 if not isinstance(raw_areas, list):
                     raise ProviderError('Bilibili area list unavailable')
                 area_map = {str(a.get('name')): str(a.get('id')) for a in raw_areas if isinstance(a, dict)}
+            area_ids = []
             for area in areas:
-                if time.monotonic() >= deadline:
-                    errors += 1
-                    self.warnings.append('Discovery time budget reached')
-                    break
                 aid = area if re.fullmatch(r'[0-9]{1,4}', area) else area_map.get(area)
                 if aid is None:
                     raise ProviderError('Unknown Bilibili parent area')
-                try:
-                    rows = self._api('/room/v1/Area/getRoomList', {
-                        'platform': 'web', 'parent_area_id': aid, 'area_id': 0,
-                        'sort_type': 'online', 'page': 1, 'page_size': min(count * 2, 50)}, config)
-                    if not isinstance(rows, list):
-                        raise ProviderError('Bilibili area data unavailable')
-                    accepted = 0
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        try:
-                            online = int(row.get('online', 0))
-                            rid = normalize_room(row.get('roomid', ''))
-                        except (ValueError, TypeError):
-                            continue
-                        if online < int(config.get('min_online', 0)) or rid in seen:
-                            continue
-                        before = len(channels)
-                        add(rid, str(row.get('uname') or ''), str(row.get('face') or ''))
-                        accepted += int(len(channels) > before)
-                        if accepted >= count:
-                            break
-                except ProviderError:
-                    errors += 1
-                    self.warnings.append('A Bilibili area could not be fetched')
+                area_ids.append(aid)
+            min_online = int(config.get('min_online', 0))
+
+            def area_rows(aid):
+                rows = self._api('/room/v1/Area/getRoomList', {
+                    'platform': 'web', 'parent_area_id': aid, 'area_id': 0,
+                    'sort_type': 'online', 'page': 1, 'page_size': min(count * 2, 50)}, config)
+                if not isinstance(rows, list):
+                    raise ProviderError('Bilibili area data unavailable')
+                return rows
+
+            for _, rows, error in fan_out(area_rows, area_ids, deadline):
+                if error is not None:
+                    failed(error, 'A Bilibili area could not be fetched')
+                    continue
+                accepted = 0
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    try:
+                        online = int(row.get('online', 0))
+                        rid = normalize_room(row.get('roomid', ''))
+                    except (ValueError, TypeError):
+                        continue
+                    if online < min_online or rid in seen:
+                        continue
+                    # The area list only contains live rooms and already carries
+                    # canonical IDs and metadata; no per-room get_info round trip.
+                    add(Channel('bilibili', rid, str(row.get('uname') or 'Bilibili ' + rid),
+                                str(row.get('title') or ''), str(row.get('face') or row.get('user_cover') or '')))
+                    accepted += 1
+                    if accepted >= count:
+                        break
         if not channels and errors:
             raise ProviderError('Bilibili discovery failed')
         return channels
 
     def resolve(self, room_id, config):
         rid = normalize_room(room_id)
-        info = self._room(rid, config)
         wanted = int(config.get('quality', 10000))
         def play(qn):
-            return self._api('/xlive/web-room/v2/index/getRoomPlayInfo', {
-                'room_id': info.room_id, 'protocol': '0,1', 'format': '0,1,2',
+            # getRoomPlayInfo reports live_status itself, so one request per switch.
+            data = self._api('/xlive/web-room/v2/index/getRoomPlayInfo', {
+                'room_id': rid, 'protocol': '0,1', 'format': '0,1,2',
                 'codec': '0,1', 'qn': qn, 'platform': 'web', 'ptype': 8}, config)
+            if not isinstance(data, dict):
+                raise ProviderError('Bilibili play data unavailable')
+            if 'live_status' in data and data['live_status'] != 1:
+                raise RoomOfflineError('Bilibili room is offline')
+            return data
         data = play(wanted or 10000)
         stream = select_stream(data, config.get('prefer_avc', True))
         if wanted == 0 and int(stream.quality or 0) >= 10000:
@@ -233,14 +252,12 @@ class Bilibili:
                     if m:
                         sessdata = m.group(1)
                         break
-            if not sessdata and data.get('url'):
-                try:
-                    p = urlsplit(data['url'])
-                    qs = parse_qs(p.query)
-                    if 'SESSDATA' in qs and qs['SESSDATA']:
-                        sessdata = qs['SESSDATA'][0]
-                except Exception:
-                    pass
+            if not sessdata and isinstance(data.get('url'), str):
+                # Keep the raw percent-encoded value exactly as a cookie would carry
+                # it; decoding turns %2C into commas that the config store rejects.
+                m = re.search(r'[?&]SESSDATA=([^&#]+)', data['url'])
+                if m:
+                    sessdata = m.group(1)
             if not sessdata or not isinstance(sessdata, str) or len(sessdata) > 4096 or re.search(r'[\s;\x00-\x1f\x7f]', sessdata):
                 raise ProviderError('Failed to extract valid SESSDATA from login response')
             return {'status': 'success', 'sessdata': sessdata, 'message': '登录成功'}

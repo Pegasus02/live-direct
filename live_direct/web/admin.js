@@ -5,7 +5,7 @@
   // entry here; the server must also register its provider, admin path and config schema.
   const PLATFORMS = [
     {
-      id: 'douyin', name: '抖音', glyph: '抖', logo: true, tagline: '手动房间 + 分类热门',
+      id: 'douyin', name: '抖音', glyph: '抖', logo: true, share: true, tagline: '分享链接 + 分类热门',
       room: { pattern: /^[A-Za-z0-9_-]{1,64}$/, numeric: false, hosts: ['live.douyin.com'], hint: '房间号，或 live.douyin.com 直播间链接' },
       categories: { key: 'categories', label: '推荐分类', max: 8, custom: false },
       count: { key: 'count', label: '推荐总数', max: 100, hint: '所有分类合计，按热度轮流挑选' },
@@ -134,6 +134,7 @@
       if (typeof item !== 'string') continue;
       const text = /^Discovery time budget/.test(item) ? '耗时超出预算，部分内容推迟到下次刷新'
         : /^A manual .+ room could not be fetched$/.test(item) ? '有手动房间获取失败'
+        : /share link could not be fetched$/.test(item) ? '有分享链接获取失败'
         : /room could not be fetched$/.test(item) ? '有房间获取失败'
         : /(category|area) could not be fetched$/.test(item) ? '有分类获取失败'
         : /no trusted stream$/.test(item) ? '有房间没有可用的直播流'
@@ -239,6 +240,8 @@
     return {
       enabled: values.enabled === true,
       rooms: Array.isArray(values.rooms) ? [...values.rooms] : [],
+      // Douyin's legacy web room IDs stay in the draft unchanged so saving preserves them.
+      ...(platform.share ? { share_links: Array.isArray(values.share_links) ? [...values.share_links] : [] } : {}),
       [platform.categories.key]: normalizeCategories(platform, values[platform.categories.key]),
       [platform.count.key]: values[platform.count.key],
       [platform.min.key]: values[platform.min.key],
@@ -273,40 +276,72 @@
   function section(title, hint, ...body) {
     return h('section', { class: 'card form-card' }, h('div', { class: 'form-card-head' }, h('h2', { text: title }), hint ? h('p', { class: 'muted small', text: hint }) : null), ...body);
   }
-  function roomsEditor(platform) {
-    const list = h('ul', { class: 'chips', 'aria-label': '已添加的房间' });
+  // Mirrors the server's douyin.share_links rule: exactly one strict short URL per line.
+  function parseShareLink(raw) {
+    const text = raw.trim();
+    if (!text) return null;
+    if (text.length > 2048) return undefined;
+    const starts = text.match(/(?:[A-Za-z][A-Za-z0-9+.-]*:)?\/\/|www\./gi) || [];
+    const links = [...text.matchAll(/https:\/\/[^\s<>"'（）()【】\[\]，。！？；、]+/g)];
+    if (starts.length !== 1 || links.length !== 1) return undefined;
+    const at = links[0].index;
+    if (at && /[A-Za-z0-9_./:@%+\\-]/.test(text[at - 1])) return undefined;
+    return /^https:\/\/v\.douyin\.com\/[A-Za-z0-9_-]+\/$/.test(links[0][0]) ? links[0][0] : undefined;
+  }
+  function listEditor(platform, spec) {
+    const key = spec.key;
+    const list = h('ul', { class: 'chips', 'aria-label': spec.listLabel });
     const counter = h('span', { class: 'muted small' });
     const error = h('p', { class: 'field-error', role: 'alert', hidden: true });
-    const input = h('input', { id: `${platform.id}-room-input`, type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: '输入房间号或链接，回车添加；可一次粘贴多行' });
+    const input = h('input', { id: `${platform.id}-${key.replaceAll('_', '-')}-input`, type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: spec.placeholder });
     function render() {
-      list.replaceChildren(...draft.rooms.map(room => h('li', { class: 'chip' }, h('span', { class: 'mono', text: room }),
-        h('button', { type: 'button', class: 'chip-remove', 'aria-label': `移除房间 ${room}`, onclick: () => { draft.rooms = draft.rooms.filter(r => r !== room); render(); updateDirty(); } }, icon('x')))));
-      if (!draft.rooms.length) list.append(h('li', { class: 'chips-empty muted', text: '还没有手动房间，只会抓取推荐频道。' }));
-      counter.textContent = `${draft.rooms.length} / 100`;
+      list.replaceChildren(...draft[key].map(value => h('li', { class: 'chip' }, h('span', { class: 'mono', text: value }),
+        h('button', { type: 'button', class: 'chip-remove', 'aria-label': `移除 ${value}`, onclick: () => { draft[key] = draft[key].filter(v => v !== value); render(); updateDirty(); } }, icon('x')))));
+      if (!draft[key].length) list.append(h('li', { class: 'chips-empty muted', text: spec.empty }));
+      counter.textContent = `${draft[key].length} / 100`;
     }
-    function add() {
-      const tokens = input.value.split(/[\s,，]+/u).filter(Boolean);
+    function add(text = input.value) {
+      const tokens = spec.split(text).filter(token => token.trim());
       const rejected = [];
       for (const token of tokens) {
-        const room = parseRoom(platform, token);
-        if (room === undefined) rejected.push(token);
-        else if (room && !draft.rooms.includes(room)) {
-          if (draft.rooms.length >= 100) { rejected.push(token); continue; }
-          draft.rooms.push(room);
+        const value = spec.parse(token);
+        if (value === undefined) rejected.push(token.trim());
+        else if (value && !draft[key].includes(value)) {
+          if (draft[key].length >= 100) { rejected.push(token.trim()); continue; }
+          draft[key] = [...draft[key], value];
         }
       }
-      input.value = rejected.join('\n');
+      input.value = rejected.join(spec.joiner);
       error.hidden = !rejected.length;
-      error.textContent = rejected.length ? `无法识别 ${rejected.length} 项：请使用${platform.room.hint}。` : '';
+      error.textContent = rejected.length ? `无法识别 ${rejected.length} 项：${spec.errorHint}` : '';
       render(); updateDirty();
     }
     input.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); add(); } });
-    input.addEventListener('paste', () => setTimeout(() => { if (/[\n,，]/u.test(input.value)) add(); }));
+    input.addEventListener('paste', event => {
+      // Single-line inputs drop newlines, so split pasted multi-line text here.
+      const text = event.clipboardData?.getData('text') || '';
+      // Assigning it to the input first would strip the line breaks.
+      if (/\r|\n/.test(text)) { event.preventDefault(); add(text); }
+      else if (spec.splitOnPaste) setTimeout(() => { if (spec.splitOnPaste.test(input.value)) add(); });
+    });
     render();
-    return section('手动房间', `${platform.room.hint}。链接会自动转换为房间号；未开播的房间不会出现在订阅里。`,
-      list, h('div', { class: 'add-row' }, h('label', { class: 'sr-only', for: input.id, text: '添加房间' }), input,
-        h('button', { type: 'button', class: 'btn', onclick: add }, icon('plus'), '添加')), error, h('div', { class: 'card-foot' }, counter));
+    return section(spec.title, spec.hint, list, h('div', { class: 'add-row' }, h('label', { class: 'sr-only', for: input.id, text: spec.title }), input,
+      h('button', { type: 'button', class: 'btn', onclick: () => add() }, icon('plus'), '添加')), error, h('div', { class: 'card-foot' }, counter));
   }
+  const roomsEditor = platform => listEditor(platform, {
+    key: 'rooms', title: '手动房间', listLabel: '已添加的房间', joiner: '\n', splitOnPaste: /[,，]/u,
+    hint: `${platform.room.hint}。链接会自动转换为房间号；未开播的房间不会出现在订阅里。`,
+    placeholder: '输入房间号或链接，回车添加；可一次粘贴多行', empty: '还没有手动房间，只会抓取推荐频道。',
+    errorHint: `请使用${platform.room.hint}。`,
+    split: text => text.split(/[\s,，]+/u), parse: token => parseRoom(platform, token)
+  });
+  const shareLinksEditor = platform => listEditor(platform, {
+    key: 'share_links', title: '手机分享链接', listLabel: '已添加的分享链接', joiner: '\n',
+    hint: '在抖音 App 直播间点「分享 → 复制链接」，把整段分享文案或其中的 v.douyin.com 短链接粘贴进来，每行一条，会自动提取短链接并去重。分享链接可能过期，主播重新开播后取不到时请重新分享并更新。旧版网页房间号仍保留在配置中，不会被删除。',
+    placeholder: '粘贴分享文案或 https://v.douyin.com/短码/，回车添加；可一次粘贴多行', empty: '还没有分享链接，只会抓取推荐频道。',
+    errorHint: '每行只能包含一个 https://v.douyin.com/短码/ 链接。',
+    split: text => text.split(/\r\n|[\r\n]/u), parse: parseShareLink
+  });
   function numberField(platform, spec) {
     const id = `${platform.id}-${spec.key.replaceAll('_', '-')}`;
     const max = spec.max || 1000000000;
@@ -432,14 +467,16 @@
         qrCode.replaceChildren(wrap.firstElementChild || wrap);
       } else qrCode.textContent = '二维码组件未载入';
       qrStatus.textContent = '等待扫码…';
+      let failures = 0;
       const poll = async count => {
         qr.timer = null;
         if (!live(session)) return;
         if (count > 90) { finish(session, '二维码已失效，请重新生成。'); return; }
         let result = null;
-        try { result = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key }); }
-        catch (_) { /* Transient poll failures are retried on the next tick. */ }
+        try { result = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key }); failures = 0; }
+        catch (_) { failures += 1; }
         if (!live(session)) return;
+        if (!result && failures >= 5) { finish(session, '状态查询多次失败，请重新生成二维码。'); return; }
         if (result?.status === 'success') {
           stopQr(); qrBox.hidden = true; qrButton.disabled = false;
           toast('扫码登录成功，凭据已保存并开始刷新频道。', 'success');
@@ -450,6 +487,7 @@
           return;
         }
         if (result?.status === 'expired') { finish(session, '二维码已失效，请重新生成。'); return; }
+        if (result?.status === 'error') { finish(session, safeText(result.message, '登录未完成，请重新生成二维码。')); return; }
         if (result?.status === 'scanned') qrStatus.textContent = '已扫码，请在手机上确认登录。';
         qr.timer = setTimeout(() => poll(count + 1), 2000);
       };
@@ -468,7 +506,7 @@
       h('section', { class: 'card enable-card' },
         h('div', { class: 'switch-row' }, h('div', {}, h('h2', { text: `启用${active.name}` }), h('p', { class: 'muted small', text: `${active.tagline}。关闭后不会向${active.name}发起任何请求。` })),
           toggle(`${active.id}-enabled`, draft.enabled, `启用${active.name}`, event => { draft.enabled = event.target.checked; updateDirty(); }))),
-      ...[roomsEditor(active), categoriesEditor(active), qualityEditor(active), active.login ? loginEditor(active) : null].filter(Boolean));
+      ...[active.share ? shareLinksEditor(active) : roomsEditor(active), categoriesEditor(active), qualityEditor(active), active.login ? loginEditor(active) : null].filter(Boolean));
     updateDirty();
   }
   function loadDraft() {

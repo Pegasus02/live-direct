@@ -1,5 +1,6 @@
-"""Discovery shared by page/API providers: manual rooms first, then a balanced
-popularity round-robin across chosen categories, all under one time budget.
+"""Discovery shared by Douyu and Huya: manual rooms first, then a balanced
+popularity round-robin across chosen categories, fetched concurrently under
+one time budget.
 
 Rows are plain dicts {id, key, name, title, logo, viewers}; `key` deduplicates
 the same live room reached through a manual entry and a category listing.
@@ -10,6 +11,7 @@ import re
 import time
 
 from ..models import Channel, ProviderError, RoomOfflineError
+from ._pool import fan_out
 
 BUDGET = 45
 
@@ -75,35 +77,37 @@ def assigned_json(source, start, limit=2_000_000):
 
 def discover(platform, label, warnings, manual, room, categories, category, count, min_viewers, accept=None):
     """Manual rooms always come first; offline rooms are skipped silently, fetch
-    failures become warnings. Category rows fill up to `count` channels, taking
-    turns between categories so one busy category cannot crowd out the others."""
+    failures become one warning each. Rooms and categories are fetched through
+    the bounded fan_out pool under one shared deadline (as Douyin and Bilibili
+    do). Category rows fill up to `count` channels, taking turns between
+    categories so one busy category cannot crowd out the others."""
     deadline = time.monotonic() + BUDGET
-    rows, errors = [], 0
-    for rid in manual:
-        if time.monotonic() >= deadline:
-            warnings.append('Discovery time budget reached; remaining rooms deferred')
-            errors += 1
-            break
-        try:
-            rows.append(room(rid))
-        except RoomOfflineError:
-            continue
-        except ProviderError:
-            errors += 1
-            warnings.append('A manual ' + label + ' room could not be fetched')
+    errors = 0
+
+    def failed(error, message):
+        nonlocal errors
+        if isinstance(error, RoomOfflineError):
+            return
+        if isinstance(error, TimeoutError):
+            message = 'Discovery time budget reached; remaining requests deferred'
+        elif not isinstance(error, ProviderError):
+            raise error
+        errors += 1
+        if message not in warnings:
+            warnings.append(message)
+    rows = []
+    for _, row, error in fan_out(room, manual, deadline):
+        if error is None:
+            rows.append(row)
+        else:
+            failed(error, 'A manual ' + label + ' room could not be fetched')
     buckets = []
-    for cid in categories if count else []:
-        if time.monotonic() >= deadline:
-            warnings.append('Discovery time budget reached; remaining categories deferred')
-            errors += 1
-            break
-        try:
-            batch = category(cid)
+    for _, batch, error in fan_out(category, categories if count else [], deadline):
+        if error is None:
             buckets.append(sorted((r for r in batch if r['viewers'] >= min_viewers),
                                   key=lambda r: r['viewers'], reverse=True))
-        except ProviderError:
-            errors += 1
-            warnings.append('A ' + label + ' category could not be fetched')
+        else:
+            failed(error, 'A ' + label + ' category could not be fetched')
     channels, seen = [], set()
 
     def add(row):

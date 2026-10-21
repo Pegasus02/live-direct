@@ -1,10 +1,11 @@
-"""Bounded, stateless API/page HTTP only. No redirects, proxies or cookie jar."""
+"""Bounded, stateless HTTP. Only the narrow Douyin share helper follows redirects."""
 import http.client
 import json
+import re
 import socket
 import ssl
 import time
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from .models import ProviderError
 
@@ -106,6 +107,153 @@ def _fetch(url, headers=None, return_headers=False, form=None):
         raise ProviderError('Upstream request failed') from None
     finally:
         connection.close()
+
+
+DOUYIN_SHARE_HOSTS = frozenset({
+    'v.douyin.com', 'webcast.amemv.com', 'www.iesdouyin.com',
+    'www.douyin.com', 'live.douyin.com',
+})
+DOUYIN_MOBILE_UA = ('Mozilla/5.0 (iPhone; CPU iPhone OS 10_3_1 like Mac OS X) '
+                    'AppleWebKit/603.1.30 (KHTML, like Gecko) Version/10.0 '
+                    'Mobile/14E304 Safari/602.1')
+# Public share attribution only: never a logged-in browser/session cookie.
+_DOUYIN_SHARE_COOKIE = ('_tea_utm_cache_1128={%22utm_source%22:%22copy%22%2C'
+                        '%22utm_medium%22:%22android%22%2C'
+                        '%22utm_campaign%22:%22client_share%22}')
+
+
+def _douyin_target(url):
+    if (not isinstance(url, str) or '\\' in url or '#' in url
+            or re.search(r'%[01][0-9a-f]|%7f', url, re.I)):
+        raise ProviderError('Untrusted Douyin share target')
+    return validate_url(url, DOUYIN_SHARE_HOSTS)
+
+
+def _douyin_room_id(p):
+    if p.hostname in ('webcast.amemv.com', 'www.iesdouyin.com'):
+        match = re.fullmatch(r'/(?:douyin/webcast/)?reflow/([0-9]{19})/?', p.path)
+        if match:
+            return match[1]
+    ids = parse_qs(p.query, keep_blank_values=True).get('room_id', [])
+    if len(ids) == 1 and re.fullmatch(r'[0-9]{19}', ids[0]):
+        return ids[0]
+    return None
+
+
+def resolve_douyin_share(url):
+    """Resolve a strict short share URL to its internal room ID, without cookies.
+
+    At most four direct HEAD requests share one total timeout. Every Location is
+    validated, including a terminal room URL which need not itself be requested.
+    This exception does not change the general API client's no-redirect policy.
+    """
+    p = _douyin_target(url)
+    if (p.hostname != 'v.douyin.com' or '?' in url or '#' in url
+            or not re.fullmatch(r'/[A-Za-z0-9_-]+/?', p.path)):
+        raise ProviderError('Invalid Douyin share URL')
+    deadline = time.monotonic() + TIMEOUT
+    seen = set()
+    for _ in range(4):
+        p = _douyin_target(url)
+        key = (p.hostname, p.path, p.query)
+        if key in seen:
+            raise ProviderError('Douyin share redirect loop')
+        seen.add(key)
+        connection = None
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderError('Upstream request timed out')
+            connection = http.client.HTTPSConnection(
+                p.hostname, timeout=remaining, context=ssl.create_default_context())
+            connection.request('HEAD', p.path + ('?' + p.query if p.query else ''),
+                               headers={'User-Agent': DOUYIN_MOBILE_UA,
+                                        'Accept-Encoding': 'identity'})
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderError('Upstream request timed out')
+            if connection.sock:
+                connection.sock.settimeout(remaining)
+            response = connection.getresponse()
+            if time.monotonic() >= deadline:
+                raise ProviderError('Upstream request timed out')
+            if response.status not in (301, 302, 303, 307, 308):
+                raise ProviderError('Douyin share room not found')
+            location = response.getheader('Location')
+            # urljoin strips some control characters; reject them beforehand.
+            if (not isinstance(location, str) or not location
+                    or any(ord(c) < 33 or ord(c) == 127 for c in location)
+                    or '\\' in location or '#' in location):
+                raise ProviderError('Untrusted Douyin share target')
+            target = urljoin(url, location)
+            destination = _douyin_target(target)
+            room_id = _douyin_room_id(destination)
+            if room_id:
+                return room_id
+            url = target
+        except ProviderError:
+            raise
+        except (OSError, ValueError, UnicodeError, http.client.HTTPException):
+            raise ProviderError('Douyin share request failed') from None
+        finally:
+            if connection:
+                connection.close()
+    raise ProviderError('Douyin share redirect limit exceeded')
+
+
+def fetch_douyin_reflow(room_id):
+    """Fetch the full reflow JSON from one fixed official endpoint.
+
+    No caller-controlled URL or headers, no user credentials, no redirects.
+    """
+    if not isinstance(room_id, str) or not re.fullmatch(r'[0-9]{19}', room_id):
+        raise ProviderError('Invalid Douyin internal room ID')
+    path = ('/webcast/room/reflow/info/?type_id=0&live_id=1&room_id='
+            + room_id + '&app_id=1128')
+    connection = None
+    try:
+        deadline = time.monotonic() + TIMEOUT
+        connection = http.client.HTTPSConnection(
+            'webcast.amemv.com', timeout=TIMEOUT, context=ssl.create_default_context())
+        connection.request('GET', path, headers={
+            'User-Agent': DOUYIN_MOBILE_UA, 'Accept-Encoding': 'identity',
+            'Cookie': _DOUYIN_SHARE_COOKIE,
+        })
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProviderError('Upstream request timed out')
+        transport = connection.sock
+        if transport:
+            transport.settimeout(remaining)
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ProviderError('Upstream HTTP request failed')
+        if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
+            raise ProviderError('Unsupported upstream encoding')
+        length = response.getheader('Content-Length')
+        if length and int(length) > MAX_BYTES:
+            raise ProviderError('Upstream response too large')
+        chunks, size = [], 0
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProviderError('Upstream request timed out')
+            if transport:
+                transport.settimeout(remaining)
+            chunk = response.read1(min(65536, MAX_BYTES + 1 - size))
+            if not chunk:
+                return json.loads(b''.join(chunks).decode('utf-8'))
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > MAX_BYTES:
+                raise ProviderError('Upstream response too large')
+    except ProviderError:
+        raise
+    except (OSError, ValueError, UnicodeError, RecursionError, http.client.HTTPException):
+        raise ProviderError('Douyin reflow request failed') from None
+    finally:
+        if connection:
+            connection.close()
 
 
 def fetch_text(url, headers=None):

@@ -7,10 +7,13 @@ Copyright upstream contributors; derivative distributed under GPL-3.0.
 """
 import json
 import re
+import time
+import threading
+from urllib.parse import urlsplit
 
-from . import common
 from .. import net
 from ..models import Channel, Stream, ProviderError, RoomOfflineError
+from ._pool import fan_out
 
 ORIGIN = 'https://live.douyin.com'
 CATEGORIES = {'101': '聊天', '102': '音乐', '103': '游戏', '104': '二次元',
@@ -119,9 +122,71 @@ class Douyin:
     def __init__(self, client=None):
         self.client = client or net
         self.warnings = []
+        self._identity_lock = threading.Lock()
+        self._identities = {}
+
+    def _remember(self, rid, internal, source=''):
+        if not re.fullmatch(r'[0-9]{19}', str(internal)):
+            return
+        with self._identity_lock:
+            if len(self._identities) >= 500:
+                self._identities.clear()
+            self._identities[rid] = (str(internal), source, time.monotonic() + 60)
+
+    def _reflow(self, internal, expected=None, source='', renew=True):
+        body = self.client.fetch_douyin_reflow(internal)
+        if not isinstance(body, dict) or body.get('status_code') != 0:
+            raise ProviderError('Douyin reflow request rejected')
+        data = body.get('data')
+        room = data.get('room') if isinstance(data, dict) else None
+        if not isinstance(room, dict):
+            raise ProviderError('Douyin reflow room unavailable')
+        owner = room.get('owner') or {}
+        rid = str(owner.get('web_rid') or '') if isinstance(owner, dict) else ''
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', rid) or (expected and rid != expected):
+            raise ProviderError('Douyin reflow room identity mismatch')
+        if str(room.get('id_str') or '') != str(internal):
+            raise ProviderError('Douyin reflow internal identity mismatch')
+        if renew:
+            self._remember(rid, internal, source)
+        if room.get('status') in (4, '4'):
+            raise RoomOfflineError('Douyin room is offline')
+        if room.get('status') not in (2, '2'):
+            raise ProviderError('Douyin live status unavailable')
+        try:
+            row = _row({'room': room, 'web_rid': rid})
+        except (AttributeError, TypeError, IndexError):
+            raise ProviderError('Douyin reflow metadata unavailable') from None
+        if not row or not isinstance(row['streams'], dict):
+            raise ProviderError('Douyin reflow stream unavailable')
+        return row
+
+    def _shared_room(self, link, expected=None):
+        internal = self.client.resolve_douyin_share(link)
+        return self._reflow(internal, expected, link)
+
+    def _lookup(self, rid, config):
+        with self._identity_lock:
+            identity = self._identities.get(rid)
+        if identity:
+            internal, source, expires = identity
+            if source and source not in config.get('share_links', []):
+                identity = None
+            elif time.monotonic() < expires:
+                return self._reflow(internal, rid, source, renew=False)
+            elif source:
+                return self._shared_room(source, rid)
+            else:
+                with self._identity_lock:
+                    if self._identities.get(rid) == identity:
+                        self._identities.pop(rid, None)
+        return self._room(rid)
 
     def _room(self, rid):
-        return parse_room_page(self.client.fetch_text(ORIGIN + '/' + rid, headers=HEADERS), rid)
+        page = self.client.fetch_text(ORIGIN + '/' + rid, headers=HEADERS)
+        if '验证码中间页' in page:
+            raise ProviderError('Douyin room request requires verification')
+        return parse_room_page(page, rid)
 
     def discover(self, config):
         self.warnings = []
@@ -129,21 +194,89 @@ class Douyin:
             return []
         manual = list(dict.fromkeys(normalize_room(v) for v in config.get('rooms', [])[:100]))
         count = max(0, min(100, int(config.get('count', 20))))
-        categories = common.category_ids(config.get('categories', []), CATEGORIES, 'Douyin')
+        categories = []
+        for category in config.get('categories', [])[:8]:
+            category = str(category)
+            cid = category if category in CATEGORIES else next((k for k, v in CATEGORIES.items() if v == category), None)
+            if cid is None:
+                raise ProviderError('Invalid Douyin category')
+            if cid not in categories:
+                categories.append(cid)
+        rows, errors = [], 0
+        deadline = time.monotonic() + 45
 
-        def category(cid):
+        def failed(error, message):
+            nonlocal errors
+            if isinstance(error, RoomOfflineError):
+                return
+            if isinstance(error, TimeoutError):
+                message = 'Discovery time budget reached; remaining requests deferred'
+            elif not isinstance(error, ProviderError):
+                raise error
+            errors += 1
+            if message not in self.warnings:
+                self.warnings.append(message)
+
+        # Resolve configured share links first so matching manual web IDs can use
+        # the API path without requesting the captcha-protected HTML page.
+        links = list(dict.fromkeys(config.get('share_links', [])[:100]))
+        shared_ids = set()
+        for _, row, error in fan_out(self._shared_room, links, deadline):
+            if error is None:
+                rows.append(row)
+                shared_ids.add(row['id'])
+            else:
+                failed(error, 'A Douyin share link could not be fetched')
+        # Reflow remembers identities only after checking the response. Manual
+        # lookup can reuse the mapping, including a confirmed offline result.
+        remaining_manual = [rid for rid in manual if rid not in shared_ids]
+        for _, row, error in fan_out(lambda rid: self._lookup(rid, config), remaining_manual, deadline):
+            if error is None:
+                rows.append(row)
+            else:
+                failed(error, 'A manual Douyin room could not be fetched')
+        min_viewers = int(config.get('min_viewers', 0))
+
+        def category_rows(cid):
             return parse_category_page(self.client.fetch_text(ORIGIN + '/categorynew/4_' + cid, headers=HEADERS), cid)
 
-        def accept(row):
+        buckets = []
+        for _, batch, error in fan_out(category_rows, categories if count else [], deadline):
+            if error is None:
+                for item in batch:
+                    with self._identity_lock:
+                        previous = self._identities.get(item['id'])
+                    self._remember(item['id'], item['key'], previous[1] if previous else '')
+                buckets.append(sorted((r for r in batch if r['viewers'] >= min_viewers),
+                                      key=lambda r: r['viewers'], reverse=True))
+            else:
+                failed(error, 'A Douyin category could not be fetched')
+        channels, seen = [], set()
+        def add(row):
+            if row['key'] in seen:
+                return False
             try:
                 select_stream(row['streams'], config.get('quality', 'HD1'))
-                return True
             except ProviderError:
-                self.warnings.append('A Douyin room has no trusted stream')
+                if 'A Douyin room has no trusted stream' not in self.warnings:
+                    self.warnings.append('A Douyin room has no trusted stream')
                 return False
-        return common.discover('douyin', 'Douyin', self.warnings, manual, self._room, categories, category,
-                               count, int(config.get('min_viewers', 0)), accept)
+            channels.append(Channel('douyin', row['id'], row['name'], row['title'], row['logo']))
+            seen.add(row['key'])
+            return True
+        for row in rows:
+            add(row)
+        added = 0
+        # Balanced round-robin among chosen categories, highest-popularity head first.
+        while any(buckets) and added < count:
+            for bucket in sorted((b for b in buckets if b), key=lambda b: b[0]['viewers'], reverse=True):
+                if added >= count:
+                    break
+                added += int(add(bucket.pop(0)))
+        if not channels and errors:
+            raise ProviderError('Douyin discovery failed')
+        return channels
 
     def resolve(self, room_id, config):
-        row = self._room(normalize_room(room_id))
+        row = self._lookup(normalize_room(room_id), config)
         return select_stream(row['streams'], config.get('quality', 'HD1'))

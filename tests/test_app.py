@@ -1,7 +1,7 @@
 import unittest
 import tempfile
 from pathlib import Path
-from live_direct.app import Application, Engine, safe_media, clean_text
+from live_direct.app import Application, Engine, safe_media, safe_logo, clean_text
 from live_direct.config import ConfigStore
 from live_direct.models import Channel, Stream
 
@@ -35,6 +35,27 @@ class AppTests(unittest.TestCase):
         self.assertEqual(out.count('#EXTINF:'), 1)
         self.assertNotIn('Name\nInjected', out)
         self.assertIn('/live/douyin/123', out)
+    def test_playlist_logo_and_id(self):
+        self.provider.discover = lambda config: [Channel('douyin', '123', 'A', '', 'http://p3.douyinpic.com/a.jpg'),
+                                                 Channel('douyin', '456', 'B', '', 'https://evil.example/x.jpg')]
+        self.engine.refresh()
+        out = self.engine.playlist('http://localhost:1907', 'a'*32).decode()
+        self.assertIn('tvg-id="douyin-123" tvg-logo="https://p3.douyinpic.com/a.jpg"', out)
+        self.assertNotIn('evil.example', out)
+        for bad in ['https://i0.hdslb.com/a".jpg', 'javascript:alert(1)', 'https://x.hdslb.com.evil.test/a', '']:
+            self.assertEqual(safe_logo(bad), '')
+    def test_platforms_refresh_concurrently(self):
+        import threading
+        barrier = threading.Barrier(2, timeout=2)
+        class Waiter:
+            def __init__(self, platform): self.platform = platform
+            def discover(self, config):
+                barrier.wait()  # Deadlocks (BrokenBarrierError) if run sequentially.
+                return [Channel(self.platform, '1', 'x')]
+        self.store.update({'bilibili': {'enabled': True}})
+        engine = Engine(self.store, {'douyin': Waiter('douyin'), 'bilibili': Waiter('bilibili')})
+        engine.refresh()
+        self.assertEqual({s['status'] for s in engine.status()['platforms'].values()}, {'ok'})
     def test_allowlist_and_cache(self):
         self.engine.resolve('douyin', '123')
         self.engine.resolve('douyin', '123')

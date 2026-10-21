@@ -20,6 +20,7 @@ from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
+LOGO_SUFFIXES = ('.hdslb.com', '.douyinpic.com', '.douyincdn.com', '.byteimg.com', '.douyucdn.cn', '.msstatic.com')
 
 
 def safe_media(url, platform=None):
@@ -31,6 +32,22 @@ def safe_media(url, platform=None):
         return p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and not p.fragment and p.hostname and p.hostname.endswith(suffixes) and bool(p.path)
     except ValueError:
         return False
+
+
+def safe_logo(url):
+    """Official avatar/cover CDN images only; upgraded to HTTPS for players."""
+    if not isinstance(url, str) or not url or len(url) > 2048 or any(ord(x) <= 32 or ord(x) == 127 or x in '"\\\'<>' for x in url):
+        return ''
+    if url.startswith('//'):
+        url = 'https:' + url
+    elif url.startswith('http://'):
+        url = 'https://' + url[7:]
+    try:
+        p = urlsplit(url)
+        ok = p.scheme == 'https' and p.port in (None, 443) and p.username is None and p.password is None and p.hostname and p.hostname.endswith(LOGO_SUFFIXES)
+    except ValueError:
+        return ''
+    return url if ok else ''
 
 
 def clean_text(value):
@@ -70,19 +87,26 @@ class Engine:
             cfg = self.store.get()
             updated = {}
             health = {}
+            enabled = [p for p in self.providers if cfg[p].get('enabled')]
+            # Platforms are independent; discover them concurrently so the
+            # slower one no longer delays the other.
+            futures = {}
+            if enabled:
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(enabled))
+                futures = {p: pool.submit(self.providers[p].discover, cfg[p]) for p in enabled}
+                pool.shutdown(wait=False)
             for platform, provider in self.providers.items():
-                pc = cfg[platform]
-                if not pc.get('enabled'):
+                if platform not in futures:
                     health[platform] = {'enabled': False, 'status': 'disabled', 'count': 0}
                     continue
                 try:
-                    rows = provider.discover(pc)
+                    rows = futures[platform].result()
                     selected = {}
                     for ch in rows[:500]:
                         if ch.platform == platform and ROOM.fullmatch(str(ch.room_id)):
                             selected[(platform, str(ch.room_id))] = ch
                     updated.update(selected)
-                    health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(getattr(provider, 'warnings', []))[:20]}
+                    health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(dict.fromkeys(getattr(provider, 'warnings', [])))[:20]}
                 except Exception:
                     with self.lock:
                         old = {key: val for key, val in self.channels.items() if key[0] == platform}
@@ -141,7 +165,9 @@ class Engine:
             for (p, r), ch in self.channels.items():
                 group = LABELS.get(p, p)
                 title = clean_text(ch.name) + (' · ' + clean_text(ch.title) if ch.title else '')
-                lines.extend([f'#EXTINF:-1 group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
+                logo = safe_logo(ch.logo)
+                attrs = f'tvg-id="{p}-{r}"' + (f' tvg-logo="{logo}"' if logo else '')
+                lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
 
     def resolve(self, platform, room):
@@ -450,6 +476,8 @@ def main():
         raise ValueError('ADMIN_AUTH_ENABLED must be true or false')
     app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true')
     with Server(('0.0.0.0', int(os.environ.get('PORT', '8080'))), app) as srv:
+        # Warm the channel list so the first player request is not a cold 503.
+        app.engine.start_refresh()
         srv.serve_forever()
 
 

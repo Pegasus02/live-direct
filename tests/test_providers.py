@@ -127,14 +127,19 @@ class ProvidersTest(unittest.TestCase):
         provider = Bilibili(client)
         config = {'enabled': True, 'rooms': ['12'], 'areas': ['网游'], 'sessdata': 'fixture%2Fsession'}
         channels = provider.discover(config)
-        self.assertEqual([c.room_id for c in channels], ['123'])
+        # Area rows are live already: added directly without a get_info per row.
+        self.assertEqual([c.room_id for c in channels], ['123', '456'])
+        self.assertEqual(sum('/get_info' in url for url, _ in client.calls), 1)
+        before = len(client.calls)
         self.assertEqual(provider.resolve('12', config).quality, '150')
+        self.assertEqual(len(client.calls) - before, 1)
         self.assertTrue(all(url.startswith('https://api.live.bilibili.com/') for url, _ in client.calls))
         self.assertTrue(all(h.get('Cookie') == 'SESSDATA=fixture%2Fsession' for _, h in client.calls))
         self.assertEqual(provider.session_status(config), {'configured': True, 'validated': False})
 
     def test_bili_failure_is_not_offline_and_messages_redacted(self):
-        client = Fake({'/get_info': {'code': -352, 'message': 'https://secret.example/?cookie=secret'}})
+        risk = {'code': -352, 'message': 'https://secret.example/?cookie=secret'}
+        client = Fake({'/get_info': risk, '/getRoomPlayInfo': risk})
         with self.assertRaises(ProviderError) as e:
             Bilibili(client).resolve('123', {})
         self.assertNotIn('secret', str(e.exception))
@@ -156,11 +161,12 @@ class ProvidersTest(unittest.TestCase):
 
         # Test fallback to data.url if Set-Cookie header missing
         client2 = Fake({
-            '/web/qrcode/poll': ([], {'code': 0, 'data': {'code': 0, 'url': 'https://passport.biligame.com/crossDomain?SESSDATA=sessdata_from_url'}})
+            '/web/qrcode/poll': ([], {'code': 0, 'data': {'code': 0, 'url': 'https://passport.biligame.com/crossDomain?DedeUserID=1&SESSDATA=abc%2C1700000000%2Cx*y&bili_jct=z'}})
         })
         poll2 = Bilibili(client2).qrcode_poll('key_12345678')
         self.assertEqual(poll2['status'], 'success')
-        self.assertEqual(poll2['sessdata'], 'sessdata_from_url')
+        # Percent-encoding preserved so the value still passes config validation.
+        self.assertEqual(poll2['sessdata'], 'abc%2C1700000000%2Cx*y')
 
         # Test waiting / scanned / expired
         for c, st in [(86101, 'waiting'), (86090, 'scanned'), (86038, 'expired')]:
@@ -275,12 +281,107 @@ class ProvidersTest(unittest.TestCase):
         channels = provider.discover({'enabled': True, 'categories': ['网游'], 'count': 1})
         self.assertEqual([c.room_id for c in channels], ['2'])
 
+    def test_huya_douyu_discovery_fan_out_and_order(self):
+        import threading, time
+        active, peak, lock = [0], [0], threading.Lock()
+        page = lambda rid: ('<script>var hyPlayerConfig = {stream: ' + json.dumps({'data': [{'gameLiveInfo': {'profileRoom': rid},
+                            'gameStreamInfoList': [{'sStreamName': 's'}]}]}) + '};</script>')
+        pages = {'/' + rid: page(rid) for rid in ('r1', 'r2', 'r3', 'r4', 'r5')}
+        pages['/bad'] = '<html>verify</html>'
+        class Slow(Fake):
+            def fetch_text(self, url, headers=None):
+                with lock:
+                    active[0] += 1; peak[0] = max(peak[0], active[0])
+                time.sleep(0.05)
+                try:
+                    return super().fetch_text(url, headers)
+                finally:
+                    with lock:
+                        active[0] -= 1
+        provider = huya.Huya(Slow(pages))
+        channels = provider.discover({'enabled': True, 'rooms': ['r1', 'bad', 'r2', 'r3', 'r4', 'r5']})
+        self.assertEqual([c.room_id for c in channels], ['r1', 'r2', 'r3', 'r4', 'r5'])
+        self.assertEqual(provider.warnings, ['A manual Huya room could not be fetched'])
+        self.assertGreater(peak[0], 1)
+        self.assertLessEqual(peak[0], 4)
+        with patch('live_direct.providers.common.BUDGET', -1):
+            provider = douyu.Douyu(Fake({}))
+            with self.assertRaises(ProviderError):
+                provider.discover({'enabled': True, 'rooms': ['1']})
+            self.assertEqual(provider.warnings, ['Discovery time budget reached; remaining requests deferred'])
+
     def test_shared_helpers(self):
         self.assertEqual([parse_heat(v) for v in ('12.5万', '1亿', '3,200', None, True, 7)], [125000, 100000000, 3200, 0, 0, 7])
         self.assertEqual(assigned_json('x = {"a": "]}", "b": [1]};', 4), {'a': ']}', 'b': [1]})
         for bad in ('{"a": 1', 'alert(1)', '{a: 1}'):
             with self.assertRaises(ProviderError):
                 assigned_json(bad, 0)
+
+    def test_bili_offline_from_play_info(self):
+        client = Fake({'/getRoomPlayInfo': {'code': 0, 'data': {'live_status': 0}}})
+        with self.assertRaises(RoomOfflineError):
+            Bilibili(client).resolve('123', {})
+
+    def test_discovery_fan_out_keeps_order_and_isolates_failures(self):
+        import threading, time
+        active, peak, lock = [0], [0], threading.Lock()
+        class Slow(Fake):
+            def fetch_text(self, url, headers=None):
+                with lock:
+                    active[0] += 1; peak[0] = max(peak[0], active[0])
+                time.sleep(0.05)
+                try:
+                    return super().fetch_text(url, headers)
+                finally:
+                    with lock:
+                        active[0] -= 1
+        pages = {}
+        for rid in ('r1', 'r2', 'r3', 'r4', 'r5'):
+            fx = dy_fixture(rid); fx['room']['id_str'] = rid
+            pages['/' + rid] = flight([0, 0, 0, {'state': {'roomStore': {'roomInfo': fx}}}])
+        pages['/bad'] = '<html>blocked</html>'
+        provider = Douyin(Slow(pages))
+        channels = provider.discover({'enabled': True, 'rooms': ['r1', 'bad', 'r2', 'r3', 'r4', 'r5']})
+        self.assertEqual([c.room_id for c in channels], ['r1', 'r2', 'r3', 'r4', 'r5'])
+        self.assertEqual(provider.warnings, ['A manual Douyin room could not be fetched'])
+        self.assertGreater(peak[0], 1)
+        self.assertLessEqual(peak[0], 4)
+
+    def test_fan_out_slow_head_does_not_discard_finished_items(self):
+        import threading, time
+        from live_direct.providers._pool import fan_out
+        release = threading.Event()
+        def fn(item):
+            if item == 'slow':
+                release.wait(2)
+            return item.upper()
+        try:
+            out = fan_out(fn, ['slow', 'a', 'b'], time.monotonic() + 0.3)
+        finally:
+            release.set()
+        self.assertIsInstance(out[0][2], TimeoutError)
+        self.assertEqual([(i, r, e) for i, r, e in out[1:]], [('a', 'A', None), ('b', 'B', None)])
+
+    def test_fan_out_spent_budget_starts_no_requests(self):
+        import threading, time
+        from live_direct.providers._pool import fan_out
+        calls, release = [], threading.Event()
+        self.assertTrue(all(isinstance(e, TimeoutError) for _, _, e in fan_out(calls.append, ['x', 'y'], time.monotonic() - 1)))
+        self.assertEqual(calls, [])
+        def fn(item):
+            calls.append(item)
+            if item.startswith('block'):
+                release.wait(2)
+            return item
+        try:
+            # 2 workers busy past the deadline; queued items must not reach fn.
+            out = fan_out(fn, ['block1', 'block2', 'q1', 'q2'], time.monotonic() + 0.2, workers=2)
+            release.set()
+            time.sleep(0.2)
+        finally:
+            release.set()
+        self.assertEqual(sorted(calls), ['block1', 'block2'])
+        self.assertTrue(all(isinstance(e, TimeoutError) for _, _, e in out))
 
     def test_network_api_and_media_boundaries(self):
         for url in ['http://api.live.bilibili.com/a', 'https://127.0.0.1/a',
