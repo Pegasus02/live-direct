@@ -21,7 +21,7 @@ Special thanks for the idea and educational demonstration of resolving live-room
 Project: https://github.com/simple-icons/simple-icons (package 16.35.0)
 License of the icon data: CC0-1.0.
 
-The Douyin (TikTok musical-note mark, shared by Douyin) and Bilibili badge paths in `live_direct/web/index.html` come from Simple Icons. CC0 covers the vector data only; the marks themselves remain trademarks of their owners and are used solely to identify each platform in the admin interface. No suitably licensed vector was found for Douyu or Huya; their badges are simplified fish and tiger drawings made for this project, not official artwork.
+The Douyin (TikTok musical-note mark, shared by Douyin) and Bilibili badge paths in `live_direct/web/index.html` come from Simple Icons. CC0 covers the vector data only; the marks themselves remain trademarks of their owners and are used solely to identify each platform in the admin interface. No suitably licensed vector was found for Douyu or Huya; their badges are simplified drawings made for this project (a shark after Douyu's mascot, and a tiger), not official artwork.
 
 ## Platforms and trademarks
 
