@@ -1,0 +1,80 @@
+# Static admin interface / backend contract
+
+Self-contained Chinese HTML/CSS/JavaScript. No CDN, framework, browser token
+storage, arbitrary HTML insertion, remote images or direct stream display.
+
+Routes served by the main application:
+
+- `GET /login`: `login.html`, unauthenticated; `POST /login` accepts URL-encoded
+  form field `admin_token`; backend validates origin, sets HttpOnly SameSite
+  session cookie, redirects to `/admin`. Failed login should use a fixed generic
+  message, never reflect form values. Remote access requires HTTPS.
+- `GET /admin`: authenticated `index.html`.
+- `GET /static/style.css`, `GET /static/admin.js`: fixed static assets; backend
+  may allow login CSS publicly. Do not provide arbitrary filesystem paths.
+- `GET /api/session`: authenticated `{ "csrf": "..." }`; fetched before writes.
+  CSRF is held in JS memory only. All UI JSON POST requests carry
+  `X-CSRF-Token`; backend must validate it and enforce origin/same-site policy.
+- `GET /api/config`: `ConfigStore.get(public=True)` object, no envelope.
+- `POST /api/config`: JSON nested partial patch; response is the redacted updated
+  config from `ConfigStore.update(patch)`, no envelope. Validation failures 400.
+- `POST /api/refresh`: JSON `{}`; 200/202 JSON or 204. Backend may queue refresh;
+  status is fetched immediately afterward and then GET-only polled every2s for up to180s. No automatic repeated POSTs.
+- `GET /api/status`: `{channel_count:int, refreshing:bool,
+  platforms:{douyin:{enabled:bool,status:str,count:int,cached:bool},bilibili:{...}}}`.
+  Status enum `ok/success/ready/disabled/error/warning/refreshing/idle`. UI never
+  renders arbitrary error/warning payloads, avoiding accidental URL/secret leaks.
+- `GET /api/channels`: `{channels:[{platform,room_id,name,title}]}`. Bare arrays
+  are also tolerated. Only name/title and a fixed platform label are rendered,
+  via `textContent`; URL-like metadata is suppressed. Never include resolved
+  signed media URLs/session credentials in these admin payloads.
+- `GET /api/subscription`: `{url: "http(s)://.../s/TOKEN/interface.m3u"}`.
+  Stored in JS memory only and copied with Clipboard API after explicit click;
+  never inserted into page DOM or localStorage. On insecure-LAN browsers without Clipboard API, an explicit click opens a manual-copy prompt. It is a private capability URL.
+- `POST /api/logout`: authenticated + CSRF; revokes the server session and expires its cookie.
+
+Use `Cache-Control: no-store` for session/config/admin and subscription responses.
+Suggested CSP: `default-src 'self'; script-src 'self'; style-src 'self';
+connect-src 'self'; img-src 'none'; object-src 'none'; base-uri 'none';
+frame-ancestors 'none'; form-action 'self'`. No inline scripts/styles required.
+
+## Config schema
+
+Exactly `douyin` and `bilibili` top-level keys; patches may omit fields. Defaults:
+
+```json
+{
+  "douyin": {
+    "enabled": false, "rooms": [], "categories": [], "count": 10,
+    "min_viewers": 0, "quality": "FULL_HD1"
+  },
+  "bilibili": {
+    "enabled": false, "rooms": [], "areas": [], "top_per_area": 10,
+    "min_online": 0, "quality": 10000, "prefer_avc": true, "sessdata": ""
+  }
+}
+```
+
+Public GET/update output omits `bilibili.sessdata` and includes boolean
+`bilibili.sessdata_set` (configured only, never implies validated login).
+Password field is always blank after loading/saving. Omitted or empty `sessdata`
+preserves old value. `{"bilibili":{"clear_sessdata":true}}` explicitly clears;
+set and clear together is rejected. Clear flag is not persisted. Public computed
+`sessdata_set` cannot be patched. Never pass a public object to providers.
+
+Douyin quality: `FULL_HD1`, `HD1`, `SD2`, `SD1`. Bilibili quality numeric:
+`0,80,150,250,400,10000,20000,30000`. Douyin count 0–100; Bilibili top_per_area 0–50;
+minimum viewers/online 0–1,000,000,000. Category/area names accept Chinese,
+ASCII letters/digits, underscore/hyphen (max64; Douyin max8 categories, Bilibili max16 areas). Room lists max100 per platform; Bilibili numeric IDs must be positive and normalize leading zeros. SESSDATA max4096 characters;
+exact official room URLs normalize to raw IDs, no query/fragment/port/userinfo.
+Unknown provider names, fields, wrong types and unsafe identifiers reject the
+entire update without mutating memory or disk. Cookie values reject whitespace,
+control/non-ASCII characters, semicolon/comma and excessive length.
+
+Persistence is standard-library JSON via private 0600 temp file, fsync and atomic
+replace. Newly created directories are 0700. Existing file permissions repaired
+on load. Duplicate JSON keys, symlinked path components, nonregular files and
+hardlinked configs are rejected. Resolve trusted macOS temp roots before use
+(`/var` itself is a symlink); do not resolve untrusted config-file links as a
+workaround. One process / one ConfigStore instance per file; no multiprocess
+transaction locking. No dependency on any existing NAS/API installation.

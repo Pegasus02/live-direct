@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+data/
+*.m3u
+*.m3u8
+__pycache__/
+*.py[cod]
+.venv/
+private/
+*.log

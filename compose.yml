@@ -1,0 +1,24 @@
+services:
+  live-direct:
+    build: .
+    image: live-direct:local
+    user: "10001:10001"
+    init: true
+    env_file: .env
+    ports:
+      - "${BIND_IP:-127.0.0.1}:${PORT:-1907}:8080"
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 192m
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+    restart: unless-stopped
