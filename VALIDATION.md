@@ -6,11 +6,13 @@
 
 ## Douyu / Huya (added 2026-10-21)
 
-Offline fixtures cover Douyu websec signing (MD5 rounds), betard offline/replay-loop handling, category parsing, untrusted-CDN line retry and fixed POST destination; Huya player-config and category JSON extraction without evaluation, FLV anti-code re-signing, HLS fallback, bitrate selection, offline vs. blocked pages and CDN line rotation. 45 tests pass locally (Python 3.13).
+Offline fixtures cover Douyu websec signing (MD5 rounds), betard offline/replay-loop handling, category parsing, untrusted-CDN line retry and fixed POST destination; Huya player-config and category JSON extraction without evaluation, FLV anti-code re-signing, HLS fallback, bitrate selection, offline vs. blocked pages and CDN line rotation (including through Engine.resolve). Merged head 8b43d51: 78 Python tests pass, plus JS syntax and the owner's 13 UI-logic checks.
 
-Owner NAS review of 9906c06 (2026-10-21): Douyu category discovery and rooms 762484/63136 resolved; CDN returned HTTP200 with a valid FLV header without Referer, and ffmpeg decoded 6s from each (exit 0) — not a long-playback guarantee. Huya room 660000 resolved and the NAS read HTTP200/valid FLV, but ffmpeg on the player machine got HTTP403 twice (exit 8); cause (Referer, IP binding or other CDN rule) unknown, so Huya direct playback is NOT accepted. One Huya category fetch failed once (UnicodeDecodeError) and later succeeded; treated as intermittent.
+Owner NAS review of 9906c06 (2026-10-21): Douyu category discovery and rooms 762484/63136 resolved; CDN returned HTTP200 with a valid FLV header without Referer, and ffmpeg decoded 6s from each (exit 0) — not a long-playback guarantee. Huya room 660000 resolved and the NAS read HTTP200/valid FLV, but ffmpeg on the player machine got HTTP403 twice (exit 8); cause (Referer, IP binding or other CDN rule) unknown, at that point Huya direct playback was not accepted. One Huya category fetch failed once (UnicodeDecodeError) and later succeeded; treated as intermittent.
 
-Development container: cannot reach douyu.com or huya.com. Endpoints and signing follow the referenced upstream implementations (akiralereal/iptv, public recorder projects) as of October 2026. Real-room resolution, 302 playback in APTV, and whether Huya FLV lines need a Referer the player cannot send all still need on-site checks.
+Owner acceptance of 8b43d51 (2026-10-21), deployed on the NAS with the existing configuration and subscription: playback in the owner's actual player tested OK for Huya, so Huya is accepted for that target setup. Douyu NAS checks (rooms 762484/317422) decoded 6s each, and the production configuration loaded unchanged. The earlier Mac ffmpeg HTTP403 on Huya remains unexplained (user agent, Referer or egress binding not distinguished), so this is not a claim that every network or player can play Huya direct links.
+
+Development container: cannot reach douyu.com or huya.com. Endpoints and signing follow the referenced upstream implementations (akiralereal/iptv, public recorder projects) as of October 2026. Real-room checks above were done by the owner on site; long playback and other players remain unverified.
 
 ## Live anonymous provider checks
 
