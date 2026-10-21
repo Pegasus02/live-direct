@@ -15,6 +15,9 @@ from ..models import Channel, Stream, ProviderError, RoomOfflineError
 API = 'https://api.live.bilibili.com'
 PASSPORT_API = 'https://passport.bilibili.com'
 REFERER = 'https://live.bilibili.com/'
+# Common parent areas offered as shortcuts; other names/IDs still resolve via the area list API.
+AREAS = {'2': '网游', '3': '手游', '6': '单机游戏', '1': '娱乐', '5': '电台', '9': '虚拟主播',
+         '10': '生活', '11': '知识', '13': '赛事'}
 DEFAULTS = {'enabled': False, 'rooms': [], 'areas': [], 'top_per_area': 5,
             'min_online': 0, 'quality': 10000, 'prefer_avc': True, 'sessdata': ''}
 

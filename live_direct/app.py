@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .config import ConfigStore
 from .net import MEDIA_SUFFIXES as PLATFORM_MEDIA
-from .providers import LABELS, default_providers
+from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
@@ -309,12 +309,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
-        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js'}
+        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js',
+                  '/static/icon.svg': 'icon.svg', '/static/icon-180.png': 'icon-180.png', '/favicon.ico': 'icon.svg'}
         if self.command in ('GET', 'HEAD') and (path in admin_pages or path in assets):
             if path in admin_pages and not session:
                 return self.reply(303, headers={'Location': '/login'})
             name = 'index.html' if path in admin_pages else assets[path]
-            typ = 'text/html; charset=utf-8' if name.endswith('html') else 'text/css' if name.endswith('css') else 'application/javascript'
+            typ = {'html': 'text/html; charset=utf-8', 'css': 'text/css', 'js': 'application/javascript',
+                   'svg': 'image/svg+xml', 'png': 'image/png'}[name.rsplit('.', 1)[1]]
             return self.reply(200, (self.app.web / name).read_bytes(), typ)
         if path.startswith('/api/'):
             if not session:
@@ -324,6 +326,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(200, {'csrf': session[1], 'auth_enabled': self.app.auth_enabled})
                 if path == '/api/config':
                     return self.json_reply(200, self.app.store.get(public=True))
+                if path == '/api/meta':
+                    return self.json_reply(200, {'platforms': [
+                        {'id': p, 'label': LABELS.get(p, p),
+                         'categories': [{'id': k, 'name': v} for k, v in CATEGORIES.get(p, {}).items()]}
+                        for p in self.app.engine.providers]})
                 if path == '/api/status':
                     return self.json_reply(200, self.app.engine.status())
                 if path == '/api/channels':

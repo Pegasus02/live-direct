@@ -28,6 +28,10 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('GET', '/api/config')[0], 401)
         self.assertEqual(self.req('GET', '/login')[0], 200)
         self.assertEqual(self.req('GET', '/static/style.css')[0], 200)
+        for path, typ in (('/static/icon.svg', 'image/svg+xml'), ('/static/icon-180.png', 'image/png'), ('/favicon.ico', 'image/svg+xml')):
+            s, h, b = self.req('GET', path)
+            self.assertEqual((s, h['Content-Type']), (200, typ)); self.assertTrue(b)
+        self.assertEqual(self.req('GET', '/api/meta')[0], 401)
         s, h, _ = self.req('POST', '/login', urlencode({'admin_token': 'a'*32}), {'Content-Type':'application/x-www-form-urlencoded'})
         self.assertEqual(s,303); self.assertIn('HttpOnly',h['Set-Cookie'])
         cookie=h['Set-Cookie'].split(';')[0]
@@ -38,6 +42,12 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('POST','/api/config','{}',{'Cookie':cookie,'X-CSRF-Token':csrf,'Content-Type':'application/json'})[0],200)
         self.assertEqual(self.req('POST','/api/config','{}',{'Cookie':cookie,'X-CSRF-Token':csrf,'Origin':'http://evil.example'})[0],403)
         self.assertEqual(self.req('GET','/api/subscription',headers={'Cookie':cookie})[0],200)
+        self.server.app.engine.providers = {'douyu': object(), 'bilibili': object()}
+        s,h,b=self.req('GET','/api/meta',headers={'Cookie':cookie})
+        meta=json.loads(b)['platforms']
+        self.assertEqual([p['id'] for p in meta], ['douyu', 'bilibili'])
+        self.assertIn({'id': '1_2', 'name': '娱乐'}, meta[0]['categories'])
+        self.assertIn({'id': '2', 'name': '网游'}, meta[1]['categories'])
         self.assertEqual(self.req('POST','/api/logout','{}',{'Cookie':cookie})[0],403)
         s,h,b=self.req('POST','/api/logout','{}',{'Cookie':cookie,'X-CSRF-Token':csrf})
         self.assertEqual(s,204);self.assertIn('Max-Age=0',h['Set-Cookie'])
