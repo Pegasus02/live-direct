@@ -23,7 +23,7 @@
   --radius-sm: 10px;
   --brand: linear-gradient(135deg, #ff7a3d 0%, #f23a6e 50%, #6e3cf0 100%);
   --douyin: #17172b; --douyin-soft: #ececf3;
-  --bilibili: #e0457b; --bilibili-soft: #ffe9f1;
+  --bilibili: #00aeec; --bilibili-soft: #e3f6fd;
   --douyu: #f26a1b; --douyu-soft: #fff0e6;
   --huya: #d99a00; --huya-soft: #fff6d9;
 }
@@ -36,7 +36,7 @@
     --busy: #6f9bff; --busy-soft: #1a2647; --off: #77778c; --off-soft: #232330;
     --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 16px rgba(0, 0, 0, .25);
     --shadow-lg: 0 12px 40px rgba(0, 0, 0, .5);
-    --douyin: #ececf6; --douyin-soft: #2b2b3a; --bilibili: #ff7aa6; --bilibili-soft: #3b1d2a;
+    --douyin: #ececf6; --douyin-soft: #2b2b3a; --bilibili: #3cc6f5; --bilibili-soft: #10303d;
     --douyu: #ff8c47; --douyu-soft: #3a2415; --huya: #ffc233; --huya-soft: #36290c;
   }
 }
@@ -131,7 +131,8 @@ label { font-weight: 600; }
 .platform-badge { display: inline-grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 10px; font-weight: 800; font-size: 16px; background: var(--surface-2); color: var(--ink-2); }
 .platform-badge.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 13px; }
 .platform-badge.lg { width: 52px; height: 52px; border-radius: 14px; font-size: 24px; }
-.p-douyin { background: var(--douyin-soft); color: var(--douyin); }
+.platform-badge .logo { width: 62%; height: 62%; fill: currentColor; }
+.p-douyin { background: #161823; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 .p-bilibili { background: var(--bilibili-soft); color: var(--bilibili); }
 .p-douyu { background: var(--douyu-soft); color: var(--douyu); }
 .p-huya { background: var(--huya-soft); color: var(--huya); }

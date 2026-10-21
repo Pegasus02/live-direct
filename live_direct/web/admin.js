@@ -5,7 +5,7 @@
   // entry here; the server must also register its provider, admin path and config schema.
   const PLATFORMS = [
     {
-      id: 'douyin', name: '抖音', glyph: '抖', tagline: '手动房间 + 分类热门',
+      id: 'douyin', name: '抖音', glyph: '抖', logo: true, tagline: '手动房间 + 分类热门',
       room: { pattern: /^[A-Za-z0-9_-]{1,64}$/, numeric: false, hosts: ['live.douyin.com'], hint: '房间号，或 live.douyin.com 直播间链接' },
       categories: { key: 'categories', label: '推荐分类', max: 8, custom: false },
       count: { key: 'count', label: '推荐总数', max: 100, hint: '所有分类合计，按热度轮流挑选' },
@@ -13,7 +13,7 @@
       quality: { numeric: false, options: [['FULL_HD1', '原画'], ['HD1', '高清'], ['SD2', '标清'], ['SD1', '流畅']] }
     },
     {
-      id: 'bilibili', name: '哔哩哔哩', glyph: '哔', tagline: '手动房间 + 分区热门',
+      id: 'bilibili', name: '哔哩哔哩', glyph: '哔', logo: true, tagline: '手动房间 + 分区热门',
       room: { pattern: /^[0-9]{1,20}$/, numeric: true, hosts: ['live.bilibili.com'], hint: '数字房间号，或 live.bilibili.com 直播间链接' },
       categories: { key: 'areas', label: '推荐分区', max: 16, custom: true },
       count: { key: 'top_per_area', label: '每个分区', max: 50, hint: '每个分区最多取的房间数' },
@@ -68,7 +68,17 @@
     svg.append(use);
     return svg;
   }
-  const badge = (platform, size = '') => h('span', { class: `platform-badge p-${platform.id} ${size}`.trim(), 'aria-hidden': 'true', text: platform.glyph });
+  function mark(platform) {
+    if (!platform.logo) return document.createTextNode(platform.glyph);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'logo');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    use.setAttribute('href', `#logo-${platform.id}`);
+    svg.append(use);
+    return svg;
+  }
+  // Official platform marks where a licensed vector exists; otherwise a text glyph.
+  const badge = (platform, size = '') => h('span', { class: `platform-badge p-${platform.id} ${size}`.trim(), 'aria-hidden': 'true' }, mark(platform));
   function toggle(id, checked, label, onchange) {
     return h('label', { class: 'switch' },
       h('input', { type: 'checkbox', role: 'switch', id, checked, 'aria-label': label, onchange }),
@@ -165,7 +175,7 @@
       ? '管理该平台的房间、推荐与画质；保存不会影响其他平台。'
       : '查看各平台运行状态和全部频道，复制私有订阅到播放器。';
     const pageBadge = byId('page-badge');
-    if (active) { pageBadge.hidden = false; pageBadge.className = `platform-badge p-${active.id} lg`; pageBadge.textContent = active.glyph; }
+    if (active) { pageBadge.hidden = false; pageBadge.className = `platform-badge p-${active.id} lg`; pageBadge.replaceChildren(mark(active)); }
     byId('overview-view').hidden = Boolean(active);
     byId('config-form').hidden = !active;
     byId('channels-heading').textContent = active ? `${active.name}频道` : '全部频道';

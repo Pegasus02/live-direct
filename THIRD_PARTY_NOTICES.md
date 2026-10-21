@@ -16,6 +16,13 @@ License of that separate project: GNU GPL version 2.
 
 Special thanks for the idea and educational demonstration of resolving live-room playback URLs for external players. No real-url source code is incorporated in this application. The acknowledgement is conceptual and is not a claim that GPL-2.0-only code is relicensed under GPL-3.0. If source from it is ever incorporated, compatibility and obligations must be reviewed first.
 
+## Simple Icons — platform marks
+
+Project: https://github.com/simple-icons/simple-icons (package 16.35.0)
+License of the icon data: CC0-1.0.
+
+The Douyin (TikTok musical-note mark, shared by Douyin) and Bilibili badge paths in `live_direct/web/index.html` come from Simple Icons. CC0 covers the vector data only; the marks themselves remain trademarks of their owners and are used solely to identify each platform in the admin interface. No suitably licensed vector was found for Douyu or Huya, which keep text badges.
+
 ## Platforms and trademarks
 
 Douyin/抖音, Bilibili/哔哩哔哩, Douyu/斗鱼 and Huya/虎牙 belong to their respective owners. This is an unofficial, independent tool. Users must comply with platform terms, applicable law and rights of creators; no access-control/DRM circumvention, paid-content entitlement bypass or redistribution permission is provided.
