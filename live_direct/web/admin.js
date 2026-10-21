@@ -380,9 +380,15 @@
       toggle(`${platform.id}-prefer-avc`, draft.prefer_avc, '优先 H.264', event => { draft.prefer_avc = event.target.checked; updateDirty(); })) : null;
     return section('画质偏好', '实际画质取决于直播间可用档位，未登录时平台可能降档。HTTP-FLV 优先，没有时回退 HLS。', group, extra);
   }
+  const qr = { session: 0, owner: 0, timer: null };
+  // Invalidates any running QR session and its pending poll.
+  function stopQr() {
+    qr.session += 1;
+    if (qr.timer) { clearTimeout(qr.timer); qr.timer = null; }
+  }
   function loginEditor(platform) {
     const configured = Boolean(state.config?.[platform.id]?.sessdata_set);
-    const status = pill(configured ? { key: 'ok', label: '已保存 · 有效性未验证' } : { key: 'off', label: '未配置 · 匿名模式' });
+    let status = pill(configured ? { key: 'ok', label: '已保存 · 有效性未验证' } : { key: 'off', label: '未配置 · 匿名模式' });
     const qrCode = h('div', { class: 'qr-code' });
     const qrStatus = h('p', { class: 'muted', text: '正在获取登录二维码…' });
     const qrCancel = h('button', { type: 'button', class: 'btn btn-ghost', text: '取消' });
@@ -393,36 +399,61 @@
     const clear = h('input', { type: 'checkbox', id: 'clear-sessdata', disabled: !configured, onchange: event => {
       secretDraft.clear = event.target.checked; secret.disabled = event.target.checked; secret.value = ''; secretDraft.sessdata = ''; updateDirty();
     } });
-    let timer = null;
-    const stop = () => { if (timer) { clearInterval(timer); timer = null; } };
-    qrCancel.addEventListener('click', () => { stop(); qrBox.hidden = true; qrButton.disabled = false; });
+    const showStatus = configured => {
+      status.replaceWith(status = pill(configured ? { key: 'ok', label: '已保存 · 有效性未验证' } : { key: 'off', label: '未配置 · 匿名模式' }));
+      clear.disabled = !configured;
+    };
+    // Every start/cancel/re-render bumps qr.session; a response from an older
+    // session is ignored, so it can neither re-enable the button nor stop the
+    // current session's polling. Polls are serial: the next one is scheduled
+    // only after the previous request has settled.
+    stopQr();
+    const current = ++qr.owner; // A re-rendered form retires the previous editor's session.
+    const live = session => session === qr.session && current === qr.owner;
+    const finish = (session, message) => {
+      if (!live(session)) return;
+      stopQr(); qrStatus.textContent = message; qrButton.disabled = false;
+    };
+    qrCancel.addEventListener('click', () => { stopQr(); qrBox.hidden = true; qrButton.disabled = false; });
     qrButton.addEventListener('click', async () => {
-      stop(); qrBox.hidden = false; qrButton.disabled = true; qrStatus.textContent = '正在获取登录二维码…'; qrCode.replaceChildren();
+      stopQr();
+      const session = qr.session;
+      qrBox.hidden = false; qrButton.disabled = true; qrStatus.textContent = '正在获取登录二维码…'; qrCode.replaceChildren();
+      let data;
       try {
-        const data = await api('/api/bilibili/qrcode/generate', {});
+        data = await api('/api/bilibili/qrcode/generate', {});
         if (!data.url || !data.qrcode_key) throw new Error('生成二维码失败');
-        if (typeof qrcode !== 'undefined') {
-          const qr = qrcode(0, 'M'); qr.addData(data.url); qr.make();
-          const wrap = document.createElement('div');
-          wrap.innerHTML = qr.createSvgTag({ scalable: true }); // Locally generated SVG markup, not server text.
-          qrCode.replaceChildren(wrap.firstElementChild || wrap);
-        } else qrCode.textContent = '二维码组件未载入';
-        qrStatus.textContent = '等待扫码…';
-        let count = 0;
-        timer = setInterval(async () => {
-          if (++count > 90) { stop(); qrStatus.textContent = '二维码已失效，请重新生成。'; qrButton.disabled = false; return; }
-          try {
-            const poll = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key });
-            if (poll.status === 'success') {
-              stop(); qrBox.hidden = true; qrButton.disabled = false;
-              toast('扫码登录成功，凭据已保存并开始刷新频道。', 'success');
-              state.config = await api('/api/config');
-              loadDraft(); await refreshData();
-            } else if (poll.status === 'scanned') qrStatus.textContent = '已扫码，请在手机上确认登录。';
-            else if (poll.status === 'expired') { stop(); qrStatus.textContent = '二维码已失效，请重新生成。'; qrButton.disabled = false; }
-          } catch (_) { /* Transient poll failures are retried on the next tick. */ }
-        }, 2000);
-      } catch (error) { qrStatus.textContent = error.message || '获取失败'; qrButton.disabled = false; }
+      } catch (error) { finish(session, error.message || '获取失败'); return; }
+      if (!live(session)) return;
+      if (typeof qrcode !== 'undefined') {
+        const code = qrcode(0, 'M'); code.addData(data.url); code.make();
+        const wrap = document.createElement('div');
+        wrap.innerHTML = code.createSvgTag({ scalable: true }); // Locally generated SVG markup, not server text.
+        qrCode.replaceChildren(wrap.firstElementChild || wrap);
+      } else qrCode.textContent = '二维码组件未载入';
+      qrStatus.textContent = '等待扫码…';
+      const poll = async count => {
+        qr.timer = null;
+        if (!live(session)) return;
+        if (count > 90) { finish(session, '二维码已失效，请重新生成。'); return; }
+        let result = null;
+        try { result = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key }); }
+        catch (_) { /* Transient poll failures are retried on the next tick. */ }
+        if (!live(session)) return;
+        if (result?.status === 'success') {
+          stopQr(); qrBox.hidden = true; qrButton.disabled = false;
+          toast('扫码登录成功，凭据已保存并开始刷新频道。', 'success');
+          // Only the credential changed: keep any unsaved room/category/quality edits.
+          try { state.config = await api('/api/config'); } catch (_) { /* Status refresh below still runs. */ }
+          showStatus(Boolean(state.config?.[platform.id]?.sessdata_set));
+          await refreshData().catch(() => {});
+          return;
+        }
+        if (result?.status === 'expired') { finish(session, '二维码已失效，请重新生成。'); return; }
+        if (result?.status === 'scanned') qrStatus.textContent = '已扫码，请在手机上确认登录。';
+        qr.timer = setTimeout(() => poll(count + 1), 2000);
+      };
+      qr.timer = setTimeout(() => poll(1), 2000);
     });
     return section('登录态（可选）', '匿名可用时无需登录；登录后可获取账号本来有权限的更高画质。凭证只发往固定官方接口，不回显、不写入浏览器存储。',
       h('div', { class: 'switch-row' }, h('div', {}, h('b', { text: '当前状态' }), h('p', {}, status)), qrButton), qrBox,
@@ -552,11 +583,25 @@
     if (state.busy || !active || !isDirty()) return;
     let body;
     try { body = buildPatch(); } catch (error) { toast(error.message, 'error'); return; }
+    const submitted = JSON.stringify(draft);
+    const submittedSecret = { ...secretDraft };
     lock(true);
     try {
       state.config = await api('/api/config', body);
-      loadDraft();
-      toast(`${active.name}配置已保存，正在刷新频道。`, 'success');
+      if (JSON.stringify(draft) === submitted && secretDraft.sessdata === submittedSecret.sessdata && secretDraft.clear === submittedSecret.clear) {
+        loadDraft();
+        toast(`${active.name}配置已保存，正在刷新频道。`, 'success');
+      } else {
+        // Edits made while the request was in flight stay in the form and stay dirty.
+        saved = JSON.stringify(draftFrom(active, state.config));
+        if (secretDraft.sessdata === submittedSecret.sessdata && secretDraft.clear === submittedSecret.clear) {
+          secretDraft.sessdata = ''; secretDraft.clear = false;
+          const secret = byId('bilibili-sessdata'); if (secret) { secret.value = ''; secret.disabled = false; }
+          const clear = byId('clear-sessdata'); if (clear) clear.checked = false;
+        }
+        updateDirty();
+        toast('已保存提交时的内容；之后的修改仍未保存。', 'success');
+      }
       await refreshData();
     } catch (error) { toast(error.message, 'error'); }
     finally { lock(false); }

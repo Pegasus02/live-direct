@@ -189,7 +189,10 @@ class Engine:
         finally:
             with self.lock:
                 if key[0] == self.generation:
-                    self.cache[key] = (time.monotonic() + (30 if succeeded else 5), stream if succeeded else None)
+                    # Providers may shorten the positive TTL (see Huya.cache_ttl); in-flight
+                    # requests for the same room are still de-duplicated via self.pending.
+                    ttl = min(30, getattr(self.providers.get(platform), 'cache_ttl', 30)) if succeeded else 5
+                    self.cache[key] = (time.monotonic() + ttl, stream if succeeded else None)
                 self.pending.pop(key, None)
                 evt.set()
                 self.resolve_slots.release()

@@ -56,6 +56,36 @@ class AppTests(unittest.TestCase):
         self.engine.refresh()
         self.assertEqual(self.engine.status()['platforms']['douyin']['status'], 'error')
         self.assertTrue(self.engine.channels)
+    def test_huya_reconnect_rotates_line_through_engine(self):
+        import json
+        from unittest.mock import patch
+        from live_direct.providers.huya import Huya
+        fm = __import__('base64').b64encode(b'p_$0_$1_$2_$3').decode()
+        line = lambda cdn: {'sCdnType': cdn, 'sStreamName': 's1', 'sFlvUrl': f'https://{cdn}.flv.huya.com/src',
+                            'sFlvUrlSuffix': 'flv', 'sFlvAntiCode': f'wsTime=65f0a1b2&fm={fm}&ctype=huya_live'}
+        page = '<script>var hyPlayerConfig = {stream: ' + json.dumps({'data': [{'gameLiveInfo': {'profileRoom': 880, 'uid': 1},
+               'gameStreamInfoList': [line('al'), line('tx')]}], 'vMultiStreamInfo': []}) + '};</script>'
+        class Client:
+            calls = 0
+            def fetch_text(self, url, headers=None):
+                Client.calls += 1
+                return page
+        self.store.update({'huya': {'enabled': True, 'rooms': ['880']}})
+        engine = Engine(self.store, {'huya': Huya(Client())})
+        now = [1000.0]
+        with patch('time.monotonic', lambda: now[0]):
+            engine.refresh()
+            host = lambda: engine.resolve('huya', '880').url.split('/')[2]
+            first, again = host(), host()
+            fetches = Client.calls
+            now[0] += 6
+            reconnect = host()
+        # Requests while one playback starts share the cached redirect (one upstream fetch);
+        # a reconnect after the short TTL resolves again on the next line.
+        self.assertEqual((first, again), ('al.flv.huya.com', 'al.flv.huya.com'))
+        self.assertEqual(fetches, 2)  # discovery + one resolve
+        self.assertEqual(reconnect, 'tx.flv.huya.com')
+        self.assertEqual(Client.calls, 3)
     def test_media_allowlist(self):
         self.assertTrue(safe_media('https://a.bilivideo.com/live.flv?x=1'))
         for u in ['https://evil.example/live.flv', 'http://a.douyincdn.com/a.flv', 'https://a.douyincdn.com@evil.example/a', 'https://a.douyincdn.com:444/a']:

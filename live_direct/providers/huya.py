@@ -29,7 +29,7 @@ DEFAULTS = {'enabled': False, 'rooms': [], 'categories': [], 'count': 10,
             'min_viewers': 0, 'quality': 0}
 HEADERS = {'Referer': REFERER, 'Accept': 'text/html', 'Accept-Language': 'zh-CN'}
 HIGH_RES = 10000
-# A player asking again this soon after a redirect most likely lost its CDN line.
+# Repeat requests for a room within this window start from the next CDN line.
 RETRY_WINDOW = 120
 
 
@@ -159,6 +159,12 @@ def select_stream(room, quality=0, start=0, now_ms=None):
 
 
 class Huya:
+    # Engine keeps a successful redirect this long. Requests a player fires while
+    # starting one playback reuse it; a reconnect after that resolves again and
+    # so can land on another line. This spreads retries over the advertised
+    # lines; a repeat request is not treated as proof that a line has failed.
+    cache_ttl = 5
+
     def __init__(self, client=None):
         self.client = client or net
         self.warnings = []
@@ -170,7 +176,7 @@ class Huya:
 
     def _line_start(self, rid):
         # Some Huya lines start refusing one client after a few minutes while the
-        # others keep serving it. A quick repeat request moves to the next line.
+        # others keep serving it, so a repeat request starts from the next line.
         now = time.monotonic()
         with self.lock:
             at, index = self.recent.get(rid, (0, -1))
