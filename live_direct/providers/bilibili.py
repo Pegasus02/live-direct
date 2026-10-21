@@ -7,12 +7,13 @@ No real-url GPL-2.0 implementation copied.
 """
 import re
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, parse_qs
 
 from .. import net
 from ..models import Channel, Stream, ProviderError, RoomOfflineError
 
 API = 'https://api.live.bilibili.com'
+PASSPORT_API = 'https://passport.bilibili.com'
 REFERER = 'https://live.bilibili.com/'
 DEFAULTS = {'enabled': False, 'rooms': [], 'areas': [], 'top_per_area': 5,
             'min_online': 0, 'quality': 10000, 'prefer_avc': True, 'sessdata': ''}
@@ -192,6 +193,55 @@ class Bilibili:
             if highest > int(stream.quality):
                 stream = select_stream(play(highest), config.get('prefer_avc', True))
         return stream
+
+    def qrcode_generate(self):
+        payload = self.client.fetch_json(PASSPORT_API + '/x/passport-login/web/qrcode/generate', headers={'Accept': 'application/json'})
+        if not isinstance(payload, dict) or payload.get('code') != 0:
+            raise ProviderError('Bilibili QR generate failed')
+        data = payload.get('data') or {}
+        url = data.get('url')
+        key = data.get('qrcode_key')
+        if not url or not key or not isinstance(url, str) or not isinstance(key, str):
+            raise ProviderError('Invalid Bilibili QR payload')
+        return {'url': url, 'qrcode_key': key}
+
+    def qrcode_poll(self, qrcode_key):
+        if not isinstance(qrcode_key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{8,128}', qrcode_key):
+            raise ProviderError('Invalid qrcode_key')
+        headers, payload = self.client.fetch_json_with_headers(
+            PASSPORT_API + '/x/passport-login/web/qrcode/poll?' + urlencode({'qrcode_key': qrcode_key}),
+            headers={'Accept': 'application/json'}
+        )
+        if not isinstance(payload, dict) or payload.get('code') != 0:
+            raise ProviderError('Bilibili QR poll failed')
+        data = payload.get('data') or {}
+        code = data.get('code')
+        if code == 86101:
+            return {'status': 'waiting', 'message': '未扫码'}
+        if code == 86090:
+            return {'status': 'scanned', 'message': '已扫码，请在手机上确认'}
+        if code == 86038:
+            return {'status': 'expired', 'message': '二维码已失效'}
+        if code == 0:
+            sessdata = None
+            for hname, hval in headers:
+                if hname.lower() == 'set-cookie':
+                    m = re.search(r'(?:^|;\s*)SESSDATA=([^;]+)', hval)
+                    if m:
+                        sessdata = m.group(1)
+                        break
+            if not sessdata and data.get('url'):
+                try:
+                    p = urlsplit(data['url'])
+                    qs = parse_qs(p.query)
+                    if 'SESSDATA' in qs and qs['SESSDATA']:
+                        sessdata = qs['SESSDATA'][0]
+                except Exception:
+                    pass
+            if not sessdata or not isinstance(sessdata, str) or len(sessdata) > 4096 or re.search(r'[\s;\x00-\x1f\x7f]', sessdata):
+                raise ProviderError('Failed to extract valid SESSDATA from login response')
+            return {'status': 'success', 'sessdata': sessdata, 'message': '登录成功'}
+        return {'status': 'error', 'message': str(data.get('message') or '未知状态')}
 
     @staticmethod
     def session_status(config):

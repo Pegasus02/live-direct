@@ -308,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
-        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css'}
+        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js'}
         if self.command in ('GET', 'HEAD') and (path in admin_pages or path in assets):
             if path in admin_pages and not session:
                 return self.reply(303, headers={'Location': '/login'})
@@ -349,6 +349,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(200, result)
                 if path == '/api/refresh':
                     return self.json_reply(200, {'accepted': self.app.engine.start_refresh()})
+                if path == '/api/bilibili/qrcode/generate':
+                    provider = self.app.engine.providers.get('bilibili')
+                    if not provider or not hasattr(provider, 'qrcode_generate'):
+                        return self.reply(404)
+                    return self.json_reply(200, provider.qrcode_generate())
+                if path == '/api/bilibili/qrcode/poll':
+                    provider = self.app.engine.providers.get('bilibili')
+                    if not provider or not hasattr(provider, 'qrcode_poll'):
+                        return self.reply(404)
+                    body = json.loads(self.body())
+                    key = body.get('qrcode_key', '')
+                    res = provider.qrcode_poll(key)
+                    if res.get('status') == 'success':
+                        sess = res.pop('sessdata')
+                        with self.app.engine.lock:
+                            self.app.store.update({'bilibili': {'sessdata': sess}})
+                            self.app.engine.invalidate()
+                        self.app.engine.start_refresh()
+                    return self.json_reply(200, res)
             return self.reply(404)
         parts = path.split('/')
         if len(parts) >= 4 and parts[1] == 's' and hmac.compare_digest(parts[2].encode(), self.app.sub_token.encode()):

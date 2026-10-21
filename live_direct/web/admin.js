@@ -167,6 +167,76 @@
     finally { lock(false); }
   });
   byId('clear-sessdata').addEventListener('change', event => { byId('bilibili-sessdata').disabled = activePlatform?.id !== 'bilibili' || event.target.checked; byId('bilibili-sessdata').value = ''; });
+  let qrPollTimer = null;
+  function stopQrPoll() {
+    if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
+  }
+  const qrBtn = byId('bilibili-qr-btn');
+  const qrBox = byId('bilibili-qr-box');
+  const qrCodeDiv = byId('bilibili-qr-code');
+  const qrStatus = byId('bilibili-qr-status');
+  const qrCancel = byId('bilibili-qr-cancel');
+  if (qrBtn && qrBox) {
+    qrBtn.addEventListener('click', async () => {
+      stopQrPoll();
+      qrBox.hidden = false;
+      qrBtn.disabled = true;
+      qrStatus.textContent = '正在获取登录二维码…';
+      qrCodeDiv.replaceChildren();
+      try {
+        const data = await api('/api/bilibili/qrcode/generate', {});
+        if (!data.url || !data.qrcode_key) throw new Error('生成二维码失败');
+        if (typeof qrcode !== 'undefined') {
+          const qr = qrcode(0, 'M');
+          qr.addData(data.url);
+          qr.make();
+          const svgWrap = document.createElement('div');
+          svgWrap.innerHTML = qr.createSvgTag({ scalable: true });
+          qrCodeDiv.replaceChildren(svgWrap.firstElementChild || svgWrap);
+        } else {
+          qrCodeDiv.textContent = '二维码组件未载入';
+        }
+        qrStatus.textContent = '请打开哔哩哔哩手机客户端扫码';
+        let count = 0;
+        qrPollTimer = setInterval(async () => {
+          count++;
+          if (count > 90) {
+            stopQrPoll();
+            qrStatus.textContent = '二维码已失效，请重新生成';
+            qrBtn.disabled = false;
+            return;
+          }
+          try {
+            const poll = await api('/api/bilibili/qrcode/poll', { qrcode_key: data.qrcode_key });
+            if (poll.status === 'success') {
+              stopQrPoll();
+              qrBox.hidden = true;
+              qrBtn.disabled = false;
+              notify('Bilibili 扫码登录成功！已自动保存凭据并刷新高画质频道。');
+              byId('secret-state').textContent = '已配置 · 扫码登录';
+              await overview();
+            } else if (poll.status === 'scanned') {
+              qrStatus.textContent = '手机已扫码，请在客户端确认登录';
+            } else if (poll.status === 'expired') {
+              stopQrPoll();
+              qrStatus.textContent = '二维码已失效，请重新生成';
+              qrBtn.disabled = false;
+            }
+          } catch (_) {}
+        }, 2000);
+      } catch (err) {
+        qrStatus.textContent = err.message || '获取失败';
+        qrBtn.disabled = false;
+      }
+    });
+  }
+  if (qrCancel && qrBox) {
+    qrCancel.addEventListener('click', () => {
+      stopQrPoll();
+      qrBox.hidden = true;
+      if (qrBtn) qrBtn.disabled = false;
+    });
+  }
   byId('copy-subscription').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(subscription); notify('订阅地址已复制。地址包含私有订阅令牌，请勿公开分享。'); }
     catch (_) {

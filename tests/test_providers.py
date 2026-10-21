@@ -48,6 +48,12 @@ class Fake:
     def fetch_text(self, url, headers=None):
         return self._fetch(url, headers)
 
+    def fetch_json_with_headers(self, url, headers=None):
+        val = self._fetch(url, headers)
+        if isinstance(val, tuple):
+            return val
+        return [], val
+
 
 class ProvidersTest(unittest.TestCase):
     def test_disabled_does_no_io(self):
@@ -127,6 +133,36 @@ class ProvidersTest(unittest.TestCase):
         self.assertNotIn('secret', str(e.exception))
         with self.assertRaises(ProviderError):
             Bilibili(client).resolve('123', {'sessdata': 'bad; second=cookie'})
+
+    def test_bili_qrcode_generate_and_poll(self):
+        client = Fake({
+            '/web/qrcode/generate': {'code': 0, 'data': {'url': 'https://passport.bilibili.com/scan?key=abc', 'qrcode_key': 'key_12345678'}},
+            '/web/qrcode/poll': ([('Set-Cookie', 'SESSDATA=secret_sessdata%2F123; Path=/')],
+                                 {'code': 0, 'data': {'code': 0, 'message': '0'}})
+        })
+        provider = Bilibili(client)
+        gen = provider.qrcode_generate()
+        self.assertEqual(gen['qrcode_key'], 'key_12345678')
+        poll = provider.qrcode_poll('key_12345678')
+        self.assertEqual(poll['status'], 'success')
+        self.assertEqual(poll['sessdata'], 'secret_sessdata%2F123')
+
+        # Test fallback to data.url if Set-Cookie header missing
+        client2 = Fake({
+            '/web/qrcode/poll': ([], {'code': 0, 'data': {'code': 0, 'url': 'https://passport.biligame.com/crossDomain?SESSDATA=sessdata_from_url'}})
+        })
+        poll2 = Bilibili(client2).qrcode_poll('key_12345678')
+        self.assertEqual(poll2['status'], 'success')
+        self.assertEqual(poll2['sessdata'], 'sessdata_from_url')
+
+        # Test waiting / scanned / expired
+        for c, st in [(86101, 'waiting'), (86090, 'scanned'), (86038, 'expired')]:
+            cl = Fake({'/web/qrcode/poll': ([], {'code': 0, 'data': {'code': c}})})
+            self.assertEqual(Bilibili(cl).qrcode_poll('key_12345678')['status'], st)
+
+        # Bad key rejection
+        with self.assertRaises(ProviderError):
+            provider.qrcode_poll('bad;inject')
 
     def test_network_api_and_media_boundaries(self):
         for url in ['http://api.live.bilibili.com/a', 'https://127.0.0.1/a',

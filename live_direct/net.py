@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from .models import ProviderError
 
-API_HOSTS = frozenset({'live.douyin.com', 'api.live.bilibili.com'})
+API_HOSTS = frozenset({'live.douyin.com', 'api.live.bilibili.com', 'passport.bilibili.com'})
 MEDIA_SUFFIXES = {
     'douyin': ('douyinliving.com', 'douyincdn.com'),
     'bilibili': ('bilivideo.com', 'bilivideo.cn', 'biliapi.net'),
@@ -46,7 +46,7 @@ def media_url(url, platform, format):
         raise ProviderError('Untrusted media URL') from None
 
 
-def _fetch(url, headers=None):
+def _fetch(url, headers=None, return_headers=False):
     p = validate_url(url)
     clean_headers = {'User-Agent': 'Mozilla/5.0 LiveDirect/1.0', 'Accept-Encoding': 'identity'}
     for key, value in (headers or {}).items():
@@ -65,6 +65,7 @@ def _fetch(url, headers=None):
         if transport:
             transport.settimeout(max(0.001, deadline - time.monotonic()))
         response = connection.getresponse()
+        resp_headers = response.getheaders() if hasattr(response, 'getheaders') else []
         if response.status != 200:
             raise ProviderError('Upstream HTTP request failed')
         if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
@@ -81,7 +82,8 @@ def _fetch(url, headers=None):
                 transport.settimeout(remaining)
             chunk = response.read1(min(65536, MAX_BYTES + 1 - size))
             if not chunk:
-                return b''.join(chunks).decode('utf-8')
+                text = b''.join(chunks).decode('utf-8')
+                return (resp_headers, text) if return_headers else text
             chunks.append(chunk)
             size += len(chunk)
             if size > MAX_BYTES:
@@ -102,5 +104,15 @@ def fetch_json(url, headers=None):
     text = _fetch(url, headers)
     try:
         return json.loads(text)
+    except (ValueError, RecursionError):
+        raise ProviderError('Invalid upstream JSON') from None
+
+
+def fetch_json_with_headers(url, headers=None):
+    resp_headers, text = _fetch(url, headers, return_headers=True)
+    try:
+        return resp_headers, json.loads(text)
+    except (ValueError, RecursionError):
+        raise ProviderError('Invalid upstream JSON') from None
     except (ValueError, RecursionError):
         raise ProviderError('Invalid upstream JSON') from None

@@ -73,9 +73,38 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('POST','/api/config','{}',dict(hdr,Origin='http://evil.example'))[0],403)
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
     def test_platform_pages_share_auth_and_reject_unknown(self):
+        import json
         for path in ['/admin/douyin','/admin/bilibili']:
             self.assertEqual(self.req('GET',path)[0],303)
         self.server.app.auth_enabled = False
+        s,h,b = self.req('GET', '/static/qrcode.min.js')
+        self.assertEqual(s, 200)
+        self.assertTrue(len(b) > 1000)
+
+        # Mock bilibili provider qr methods
+        class QRProvider:
+            def qrcode_generate(self):
+                return {'url': 'https://passport.bilibili.com/qr', 'qrcode_key': 'key_abc'}
+            def qrcode_poll(self, key):
+                return {'status': 'success', 'sessdata': 'auto_saved_sess', 'message': 'OK'}
+
+        self.server.app.engine.providers['bilibili'] = QRProvider()
+        s,h,b = self.req('GET','/api/session')
+        csrf = json.loads(b)['csrf']
+        hdr = {'X-CSRF-Token': csrf, 'Content-Type': 'application/json'}
+
+        s,h,b = self.req('POST', '/api/bilibili/qrcode/generate', '{}', hdr)
+        self.assertEqual(s, 200)
+        self.assertEqual(json.loads(b)['qrcode_key'], 'key_abc')
+
+        s,h,b = self.req('POST', '/api/bilibili/qrcode/poll', json.dumps({'qrcode_key': 'key_abc'}), hdr)
+        self.assertEqual(s, 200)
+        resp_data = json.loads(b)
+        self.assertEqual(resp_data['status'], 'success')
+        self.assertNotIn('sessdata', resp_data)  # SESSDATA must be stripped from response!
+        # Confirm store updated
+        self.assertEqual(self.store.get()['bilibili']['sessdata'], 'auto_saved_sess')
+
         for path in ['/admin','/admin/douyin','/admin/bilibili']:
             s,h,b=self.req('GET',path)
             self.assertEqual(s,200);self.assertIn(b'<!doctype html>',b)
