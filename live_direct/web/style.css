@@ -134,9 +134,10 @@ label { font-weight: 600; }
 .platform-badge .logo { width: 62%; height: 62%; fill: currentColor; }
 .p-douyin { background: #161823; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); }
 .p-bilibili { background: var(--bilibili-soft); color: var(--bilibili); }
-.p-douyu { background: linear-gradient(135deg, #ffae2b, #ff7a00); color: #fff; }
-.p-douyu .logo { width: 84%; height: 84%; }
-.p-huya { background: var(--huya-soft); color: var(--huya); }
+.platform-badge .logo-img { width: 86%; height: 86%; object-fit: contain; }
+.p-douyu { overflow: hidden; background: #ff9d1a; }
+.p-douyu .logo-img { width: 100%; height: 100%; object-fit: cover; }
+.p-huya { background: #fff; box-shadow: inset 0 0 0 1px var(--line); }
 
 /* ---------- Cards ---------- */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; }

@@ -28,7 +28,7 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('GET', '/api/config')[0], 401)
         self.assertEqual(self.req('GET', '/login')[0], 200)
         self.assertEqual(self.req('GET', '/static/style.css')[0], 200)
-        for path, typ in (('/static/icon.svg', 'image/svg+xml'), ('/static/icon-180.png', 'image/png'), ('/favicon.ico', 'image/svg+xml')):
+        for path, typ in (('/static/icon.svg', 'image/svg+xml'), ('/static/icon-180.png', 'image/png'), ('/static/logo-douyu.png', 'image/png'), ('/static/logo-huya.png', 'image/png'), ('/favicon.ico', 'image/svg+xml')):
             s, h, b = self.req('GET', path)
             self.assertEqual((s, h['Content-Type']), (200, typ)); self.assertTrue(b)
         self.assertEqual(self.req('GET', '/api/meta')[0], 401)

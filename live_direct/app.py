@@ -310,7 +310,8 @@ class Handler(BaseHTTPRequestHandler):
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
         assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css', '/static/qrcode.min.js': 'qrcode.min.js',
-                  '/static/icon.svg': 'icon.svg', '/static/icon-180.png': 'icon-180.png', '/favicon.ico': 'icon.svg'}
+                  '/static/icon.svg': 'icon.svg', '/static/icon-180.png': 'icon-180.png',
+                  '/static/logo-douyu.png': 'logo-douyu.png', '/static/logo-huya.png': 'logo-huya.png', '/favicon.ico': 'icon.svg'}
         if self.command in ('GET', 'HEAD') and (path in admin_pages or path in assets):
             if path in admin_pages and not session:
                 return self.reply(303, headers={'Location': '/login'})

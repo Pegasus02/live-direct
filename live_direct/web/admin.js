@@ -22,7 +22,7 @@
       avc: true, login: true
     },
     {
-      id: 'douyu', name: '斗鱼', glyph: '斗', logo: true, tagline: '手动房间 + 分类热门',
+      id: 'douyu', name: '斗鱼', glyph: '斗', image: '/static/logo-douyu.png', tagline: '手动房间 + 分类热门',
       room: { pattern: /^[0-9]{1,12}$/, numeric: true, hosts: ['www.douyu.com', 'douyu.com'], hint: '数字房间号，或 www.douyu.com 直播间链接' },
       categories: { key: 'categories', label: '推荐分类', max: 8, custom: false },
       count: { key: 'count', label: '推荐总数', max: 100, hint: '所有分类合计，按热度轮流挑选' },
@@ -30,7 +30,7 @@
       quality: { numeric: true, options: [[0, '原画'], [4, '蓝光 4M'], [3, '超清'], [2, '高清']] }
     },
     {
-      id: 'huya', name: '虎牙', glyph: '虎', logo: true, tagline: '手动房间 + 分类热门',
+      id: 'huya', name: '虎牙', glyph: '虎', image: '/static/logo-huya.png', tagline: '手动房间 + 分类热门',
       room: { pattern: /^(?![gGmMlL]$)[A-Za-z0-9_-]{1,64}$/, numeric: false, hosts: ['www.huya.com', 'huya.com'], hint: '房间号，或 www.huya.com 直播间链接' },
       categories: { key: 'categories', label: '推荐分类', max: 8, custom: false },
       count: { key: 'count', label: '推荐总数', max: 100, hint: '所有分类合计，按热度轮流挑选' },
@@ -69,6 +69,7 @@
     return svg;
   }
   function mark(platform) {
+    if (platform.image) return h('img', { class: 'logo-img', src: platform.image, alt: '', width: '128', height: '128', decoding: 'async' });
     if (!platform.logo) return document.createTextNode(platform.glyph);
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'logo');
@@ -77,7 +78,7 @@
     svg.append(use);
     return svg;
   }
-  // Platform marks from the page sprite; a text glyph if a platform has none.
+  // Platform marks: a bundled image, a sprite symbol, or a text glyph as fallback.
   const badge = (platform, size = '') => h('span', { class: `platform-badge p-${platform.id} ${size}`.trim(), 'aria-hidden': 'true' }, mark(platform));
   function toggle(id, checked, label, onchange) {
     return h('label', { class: 'switch' },
