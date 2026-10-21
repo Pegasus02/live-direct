@@ -1,6 +1,7 @@
 FROM python:3.12-alpine
 WORKDIR /app
 COPY live_direct /app/live_direct
+RUN chmod -R a+rX /app/live_direct
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data
 USER 10001:10001
 EXPOSE 8080
