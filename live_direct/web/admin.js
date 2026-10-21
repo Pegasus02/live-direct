@@ -1,14 +1,55 @@
 /* Fixed same-origin API; no HTML interpolation, token storage, or stream URLs. */
 'use strict';
 (() => {
+  // Add a platform here and its data-platform configuration card to extend navigation.
+  // The server must also allow its real admin path and configuration schema.
+  const PLATFORMS = [
+    { id: 'douyin', name: '抖音', path: '/admin/douyin' },
+    { id: 'bilibili', name: '哔哩哔哩', path: '/admin/bilibili' }
+  ];
   const byId = id => document.getElementById(id);
+  const activePlatform = PLATFORMS.find(platform => platform.path === window.location.pathname);
+  const activeCard = activePlatform && document.querySelector(`[data-platform="${activePlatform.id}"]`);
   let csrf = '';
   let subscription = '';
-  let busy = false;
+  let busy = true;
+  let polling = false;
   const notify = (message, error = false) => {
     byId('notice').textContent = message;
     byId('notice').classList.toggle('error', error);
   };
+  function configurePage() {
+    const nav = byId('platform-nav');
+    for (const page of [{ id: 'overview', name: '总览', path: '/admin' }, ...PLATFORMS]) {
+      const link = document.createElement('a');
+      link.href = page.path;
+      link.textContent = page.name;
+      if (page.id === (activePlatform ? activePlatform.id : 'overview')) link.setAttribute('aria-current', 'page');
+      nav.append(link);
+    }
+    const name = activePlatform ? activePlatform.name : '总览';
+    document.title = `${name} · Live Direct`;
+    byId('page-title').textContent = activePlatform ? `${name}直播管理` : '把喜欢的直播，放在一起。';
+    byId('page-description').textContent = activePlatform
+      ? `仅管理${name}配置与频道；保存不会修改其他平台设置。`
+      : '查看运行状态和全部频道，复制私有订阅。选择平台管理各自的直播配置。';
+    byId('overview').hidden = Boolean(activePlatform);
+    byId('config-form').hidden = !activeCard;
+    byId('channels-heading').textContent = activePlatform ? `${name}频道` : '全部频道';
+    for (const card of document.querySelectorAll('[data-platform]')) {
+      const active = card === activeCard;
+      card.hidden = !active;
+      // Hidden required fields must not participate in native form validation.
+      for (const input of card.querySelectorAll('input, select, textarea, button')) input.disabled = !active;
+    }
+    const statusRoot = byId('platform-statuses');
+    for (const platform of PLATFORMS) {
+      const cell = document.createElement('div');
+      const label = document.createElement('span'); label.className = 'muted'; label.textContent = platform.name;
+      const state = document.createElement('strong'); state.id = `${platform.id}-status`; state.textContent = '等待连接';
+      cell.append(label, state); statusRoot.append(cell);
+    }
+  }
   // Only controlled messages are surfaced: response errors may contain secrets.
   async function api(path, patch) {
     const options = { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } };
@@ -29,11 +70,11 @@
     return response.json();
   }
   function fill(config) {
-    for (const platform of ['douyin', 'bilibili']) {
-      const values = config[platform];
+    for (const platform of PLATFORMS) {
+      const values = config[platform.id] || {};
       for (const [key, value] of Object.entries(values)) {
         if (key === 'sessdata' || key === 'sessdata_set') continue;
-        const input = byId(`${platform}-${key.replaceAll('_', '-')}`);
+        const input = byId(`${platform.id}-${key.replaceAll('_', '-')}`);
         if (!input) continue;
         if (input.type === 'checkbox') input.checked = value === true;
         else input.value = Array.isArray(value) ? value.join(key === 'rooms' ? '\n' : ', ') : String(value);
@@ -41,50 +82,53 @@
     }
     byId('bilibili-sessdata').value = '';
     byId('clear-sessdata').checked = false;
-    byId('bilibili-sessdata').disabled = false;
-    byId('secret-state').textContent = config.bilibili.sessdata_set ? '已配置 · 有效性未验证' : '未配置 · 匿名模式';
+    byId('bilibili-sessdata').disabled = activePlatform?.id !== 'bilibili';
+    byId('secret-state').textContent = config.bilibili?.sessdata_set ? '已配置 · 有效性未验证' : '未配置 · 匿名模式';
   }
-  const list = id => byId(id).value.split(/[\s,，]+/u).filter(Boolean);
   function patch() {
-    const result = {};
-    for (const platform of ['douyin', 'bilibili']) {
-      result[platform] = {
-        enabled: byId(`${platform}-enabled`).checked,
-        rooms: list(`${platform}-rooms`),
-        quality: platform === 'douyin' ? byId('douyin-quality').value : Number(byId('bilibili-quality').value)
-      };
+    if (!activeCard) throw new Error('请先选择需要管理的平台。');
+    const values = {};
+    for (const input of activeCard.querySelectorAll('[data-config-key]')) {
+      const key = input.dataset.configKey;
+      if (input.dataset.valueType === 'list') values[key] = input.value.split(/[\s,，]+/u).filter(Boolean);
+      else if (input.type === 'checkbox') values[key] = input.checked;
+      else if (input.type === 'number' || input.dataset.valueType === 'number') values[key] = Number(input.value);
+      else values[key] = input.value;
     }
-    Object.assign(result.douyin, {categories: list('douyin-categories'), count: Number(byId('douyin-count').value), min_viewers: Number(byId('douyin-min-viewers').value)});
-    Object.assign(result.bilibili, {areas: list('bilibili-areas'), top_per_area: Number(byId('bilibili-top-per-area').value), min_online: Number(byId('bilibili-min-online').value), prefer_avc: byId('bilibili-prefer-avc').checked});
-    if (byId('clear-sessdata').checked) result.bilibili.clear_sessdata = true;
-    else if (byId('bilibili-sessdata').value) result.bilibili.sessdata = byId('bilibili-sessdata').value;
-    return result;
+    if (activePlatform.id === 'bilibili') {
+      if (byId('clear-sessdata').checked) values.clear_sessdata = true;
+      else if (byId('bilibili-sessdata').value) values.sessdata = byId('bilibili-sessdata').value;
+    }
+    // Partial updates preserve other platforms and fields not represented by this card.
+    return { [activePlatform.id]: values };
   }
   function safeText(value, fallback = '') {
-    // Suppress URL-like values even in metadata, not just known stream fields.
     return typeof value === 'string' && !/https?:\/\/|sessdata|[?&](?:token|sign|auth)=/i.test(value) ? value.slice(0, 240) : fallback;
   }
   function showStatus(status) {
     byId('channel-count').textContent = Number.isSafeInteger(status.channel_count) ? String(status.channel_count) : '—';
     const states = status.platforms || status.providers || {};
-    for (const platform of ['douyin', 'bilibili']) {
-      const state = states[platform] || {};
+    for (const platform of PLATFORMS) {
+      const state = states[platform.id] || {};
       const labels = {ok: '正常', success: '正常', ready: '就绪', disabled: '已关闭', error: '抓取异常', warning: '待检查', refreshing: '刷新中', idle: '待刷新'};
-      byId(`${platform}-status`).textContent = state.enabled === false ? '已关闭' : (labels[state.status] || '待检查');
+      byId(`${platform.id}-status`).textContent = state.enabled === false ? '已关闭' : (labels[state.status] || '待检查');
     }
+    const relevantStates = activePlatform ? [states[activePlatform.id] || {}] : Object.values(states);
     if (status.refreshing) { notify('后台正在更新频道，完成后自动更新列表。'); watchRefresh(); }
-    else if (Object.values(states).some(state => state.status === 'error' || state.status === 'warning' || (state.warnings && state.warnings.length))) notify('部分平台更新异常，可能显示上次成功结果。请检查平台配置。', true);
+    else if (relevantStates.some(state => state.status === 'error' || state.status === 'warning' || (state.warnings && state.warnings.length))) notify('平台更新异常，可能显示上次成功结果。请检查平台配置。', true);
+    else if (polling) notify('频道列表已更新。');
   }
   function showChannels(data) {
     const items = Array.isArray(data) ? data : data.channels;
+    const visible = Array.isArray(items) ? items.filter(item => !activePlatform || item.platform === activePlatform.id) : [];
     const root = byId('channel-list');
     root.replaceChildren();
-    if (!Array.isArray(items) || !items.length) {
-      const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '暂无频道，请启用平台并刷新。'; root.append(empty); return;
+    if (!visible.length) {
+      const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = activePlatform ? `暂无${activePlatform.name}频道，请检查配置并刷新。` : '暂无频道，请选择平台启用并刷新。'; root.append(empty); return;
     }
-    for (const item of items.slice(0, 1000)) {
+    for (const item of visible.slice(0, 1000)) {
       const row = document.createElement('div'); row.className = 'channel-row';
-      const tag = document.createElement('span'); tag.className = 'channel-tag'; tag.textContent = item.platform === 'douyin' ? '抖音' : item.platform === 'bilibili' ? '哔哩哔哩' : '频道';
+      const tag = document.createElement('span'); tag.className = 'channel-tag'; tag.textContent = PLATFORMS.find(platform => platform.id === item.platform)?.name || '频道';
       const detail = document.createElement('div');
       const name = document.createElement('strong'); name.textContent = safeText(item.name, '未命名频道');
       const title = document.createElement('p'); title.className = 'muted'; title.textContent = safeText(item.title, '');
@@ -96,7 +140,6 @@
     showStatus(status); showChannels(channels);
     return status;
   }
-  let polling = false;
   async function watchRefresh() {
     if (polling) return;
     polling = true;
@@ -110,10 +153,10 @@
     } catch (_) { notify('状态查询失败，请稍后重试。', true); }
     finally { polling = false; }
   }
-  function lock(value) { busy = value; byId('save').disabled = value; byId('refresh').disabled = value; }
+  function lock(value) { busy = value; byId('save').disabled = value || !activeCard; byId('refresh').disabled = value; }
   byId('config-form').addEventListener('submit', async event => {
-    event.preventDefault(); if (busy) return; lock(true);
-    try { const config = await api('/api/config', patch()); fill(config); notify('配置已安全保存，正在刷新频道。'); await overview(); watchRefresh(); }
+    event.preventDefault(); if (busy || !activeCard) return; lock(true);
+    try { const config = await api('/api/config', patch()); fill(config); notify('当前平台配置已安全保存，正在刷新频道。'); await overview(); }
     catch (error) { notify(error instanceof SyntaxError ? '服务返回格式异常。' : error.message, true); }
     finally { byId('bilibili-sessdata').value = ''; lock(false); }
   });
@@ -123,7 +166,7 @@
     catch (error) { notify(error instanceof SyntaxError ? '服务返回格式异常。' : error.message, true); }
     finally { lock(false); }
   });
-  byId('clear-sessdata').addEventListener('change', event => { byId('bilibili-sessdata').disabled = event.target.checked; byId('bilibili-sessdata').value = ''; });
+  byId('clear-sessdata').addEventListener('change', event => { byId('bilibili-sessdata').disabled = activePlatform?.id !== 'bilibili' || event.target.checked; byId('bilibili-sessdata').value = ''; });
   byId('copy-subscription').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(subscription); notify('订阅地址已复制。地址包含私有订阅令牌，请勿公开分享。'); }
     catch (_) {
@@ -146,12 +189,15 @@
       fill(await api('/api/config'));
       lock(false); notify('配置已载入。默认关闭的平台不会发起直播请求。');
       await overview();
-      try { const info = await api('/api/subscription'); if (typeof info.url === 'string') { const parsed = new URL(info.url, window.location.origin); if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) { subscription = parsed.href; byId('copy-subscription').disabled = false; } } } catch (_) { /* Subscription unavailability does not disable configuration. */ }
+      if (!activePlatform) {
+        try { const info = await api('/api/subscription'); if (typeof info.url === 'string') { const parsed = new URL(info.url, window.location.origin); if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) { subscription = parsed.href; byId('copy-subscription').disabled = false; } } } catch (_) { /* Subscription unavailability does not disable configuration. */ }
+      }
     } catch (error) { notify(error instanceof SyntaxError ? '服务返回格式异常。' : error.message, true); }
   }
   byId('logout').addEventListener('click', async () => {
     try { await api('/api/logout', {}); window.location.assign('/login'); }
     catch (_) { notify('退出失败，请重试。', true); }
   });
+  configurePage();
   start();
 })();

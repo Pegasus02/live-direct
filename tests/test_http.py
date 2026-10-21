@@ -72,6 +72,14 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.req('POST','/api/config','{}',hdr)[0],200)
         self.assertEqual(self.req('POST','/api/config','{}',dict(hdr,Origin='http://evil.example'))[0],403)
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
+    def test_platform_pages_share_auth_and_reject_unknown(self):
+        for path in ['/admin/douyin','/admin/bilibili']:
+            self.assertEqual(self.req('GET',path)[0],303)
+        self.server.app.auth_enabled = False
+        for path in ['/admin','/admin/douyin','/admin/bilibili']:
+            s,h,b=self.req('GET',path)
+            self.assertEqual(s,200);self.assertIn(b'<!doctype html>',b)
+        self.assertEqual(self.req('GET','/admin/unknown')[0],404)
     def test_subscription_auth_and_headers(self):
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
         s,h,b=self.req('HEAD','/s/'+'b'*32+'/interface.m3u')

@@ -9,7 +9,9 @@ Routes served by the main application:
   form field `admin_token`; backend validates origin, sets HttpOnly SameSite
   session cookie, redirects to `/admin`. Failed login should use a fixed generic
   message, never reflect form values. Remote access requires HTTPS.
-- `GET /admin`: authenticated `index.html`.
+- `GET /admin`: overview (all-platform status, subscription, aggregate channels).
+- `GET /admin/douyin`, `GET /admin/bilibili`: independent platform configuration/channel pages, shared `index.html` shell; current route selects only its own form card and channel metadata. Save sends only the active platform patch, never blank-overwrites other platform settings. Unknown platform paths return404. Each registered backend provider receives a matching admin route; frontend navigation/card registry must also be extended when adding a provider.
+- Admin routes require a session by default; explicit `ADMIN_AUTH_ENABLED=false` enables trusted-network no-login access. CSRF still required for writes; `/api/session` includes auth_enabled.
 - `GET /static/style.css`, `GET /static/admin.js`: fixed static assets; backend
   may allow login CSS publicly. Do not provide arbitrary filesystem paths.
 - `GET /api/session`: authenticated `{ "csrf": "..." }`; fetched before writes.

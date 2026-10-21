@@ -307,10 +307,12 @@ class Handler(BaseHTTPRequestHandler):
             secure = '; Secure' if self.app.base.startswith('https:') else ''
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
-        if self.command in ('GET', 'HEAD') and path in ('/', '/login', '/admin', '/static/admin.js', '/static/style.css'):
-            if path in ('/', '/admin') and not session:
+        admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
+        assets = {'/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css'}
+        if self.command in ('GET', 'HEAD') and (path in admin_pages or path in assets):
+            if path in admin_pages and not session:
                 return self.reply(303, headers={'Location': '/login'})
-            name = {'/': 'index.html', '/admin': 'index.html', '/login': 'login.html', '/static/admin.js': 'admin.js', '/static/style.css': 'style.css'}[path]
+            name = 'index.html' if path in admin_pages else assets[path]
             typ = 'text/html; charset=utf-8' if name.endswith('html') else 'text/css' if name.endswith('css') else 'application/javascript'
             return self.reply(200, (self.app.web / name).read_bytes(), typ)
         if path.startswith('/api/'):
