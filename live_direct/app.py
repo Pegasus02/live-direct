@@ -195,8 +195,10 @@ class Engine:
 
 
 class Application:
-    def __init__(self, store, admin_token, sub_token, public_base, engine=None):
-        if len(admin_token) < 24 or len(sub_token) < 24 or not re.fullmatch(r'[A-Za-z0-9_-]{24,128}', sub_token):
+    def __init__(self, store, admin_token, sub_token, public_base, engine=None, auth_enabled=True):
+        self.auth_enabled = auth_enabled
+        self.open_csrf = secrets.token_urlsafe(32)
+        if (auth_enabled and len(admin_token) < 24) or len(sub_token) < 24 or not re.fullmatch(r'[A-Za-z0-9_-]{24,128}', sub_token):
             raise ValueError('tokens must be independent and at least 24 characters')
         if hmac.compare_digest(admin_token, sub_token):
             raise ValueError('tokens must differ')
@@ -292,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404)
         if path == '/health' and self.command in ('GET', 'HEAD'):
             return self.reply(200, b'ok')
+        if not self.app.auth_enabled and path == '/login':
+            return self.reply(303, headers={'Location': '/admin'})
         if self.command == 'POST' and path == '/login':
             origin = self.headers.get('Origin')
             if origin and origin != self.app.base:
@@ -302,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403, '登录失败或尝试过于频繁'.encode())
             secure = '; Secure' if self.app.base.startswith('https:') else ''
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
-        session = self.app.session(self.headers.get('Cookie'))
+        session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         if self.command in ('GET', 'HEAD') and path in ('/', '/login', '/admin', '/static/admin.js', '/static/style.css'):
             if path in ('/', '/admin') and not session:
                 return self.reply(303, headers={'Location': '/login'})
@@ -314,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(401)
             if self.command in ('GET', 'HEAD'):
                 if path == '/api/session':
-                    return self.json_reply(200, {'csrf': session[1]})
+                    return self.json_reply(200, {'csrf': session[1], 'auth_enabled': self.app.auth_enabled})
                 if path == '/api/config':
                     return self.json_reply(200, self.app.store.get(public=True))
                 if path == '/api/status':
@@ -327,6 +331,8 @@ class Handler(BaseHTTPRequestHandler):
                 if self.headers.get('Origin') not in (None, self.app.base) or not hmac.compare_digest(self.headers.get('X-CSRF-Token', ''), session[1]):
                     return self.reply(403)
                 if path == '/api/logout':
+                    if not self.app.auth_enabled:
+                        return self.reply(204)
                     jar = cookies.SimpleCookie(self.headers.get('Cookie', ''))
                     with self.app.session_lock:
                         self.app.sessions.pop(jar['ld_session'].value, None)
@@ -406,7 +412,10 @@ class Server(ThreadingMixIn, HTTPServer):
 def main():
     data = Path(os.environ.get('DATA_DIR', '/data'))
     data.mkdir(mode=0o700, parents=True, exist_ok=True)
-    app = Application(ConfigStore(data / 'config.json'), os.environ['ADMIN_TOKEN'], os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'])
+    auth = os.environ.get('ADMIN_AUTH_ENABLED', 'true').lower()
+    if auth not in ('true', 'false'):
+        raise ValueError('ADMIN_AUTH_ENABLED must be true or false')
+    app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true')
     with Server(('0.0.0.0', int(os.environ.get('PORT', '8080'))), app) as srv:
         srv.serve_forever()
 

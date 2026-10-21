@@ -59,6 +59,19 @@ class HTTPTests(unittest.TestCase):
             release.set()
             if worker: worker.join(3)
         self.assertEqual(self.req('GET','/s/'+'b'*32+'/interface.m3u')[0],200)
+    def test_explicit_auth_disabled_still_requires_csrf(self):
+        import json
+        self.server.app.auth_enabled = False
+        self.assertEqual(self.req('GET','/admin')[0],200)
+        self.assertEqual(self.req('GET','/login')[0],303)
+        self.assertEqual(self.req('GET','/api/config')[0],200)
+        s,h,b=self.req('GET','/api/session')
+        data=json.loads(b);self.assertFalse(data['auth_enabled'])
+        self.assertEqual(self.req('POST','/api/config','{}')[0],403)
+        hdr={'X-CSRF-Token':data['csrf'],'Content-Type':'application/json'}
+        self.assertEqual(self.req('POST','/api/config','{}',hdr)[0],200)
+        self.assertEqual(self.req('POST','/api/config','{}',dict(hdr,Origin='http://evil.example'))[0],403)
+        self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
     def test_subscription_auth_and_headers(self):
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
         s,h,b=self.req('HEAD','/s/'+'b'*32+'/interface.m3u')

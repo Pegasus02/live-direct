@@ -136,6 +136,13 @@
       const session = await api('/api/session');
       if (typeof session.csrf !== 'string' || !session.csrf) throw new Error('安全会话尚未就绪，请重新登录。');
       csrf = session.csrf;
+      if (session.auth_enabled === false) {
+        byId('logout').hidden = true;
+        const warning = document.createElement('p');
+        warning.className = 'notice error';
+        warning.textContent = '当前后台免登录：所有能访问本服务的人都能管理配置和获取订阅。仅限可信内网/VPN，禁止直接开放公网。';
+        byId('notice').before(warning);
+      }
       fill(await api('/api/config'));
       lock(false); notify('配置已载入。默认关闭的平台不会发起直播请求。');
       await overview();
