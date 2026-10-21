@@ -25,3 +25,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build container without platform credentials
         run: docker build -t live-direct:test .
+      - name: Non-root readonly startup and persistence smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          trap 'docker stop live-direct-ci >/dev/null 2>&1 || true' EXIT
+          mkdir "$work/data"
+          sudo chown 10001:10001 "$work/data"
+          sudo chmod 700 "$work/data"
+          docker run -d --name live-direct-ci --read-only --cap-drop ALL --security-opt no-new-privileges:true -p 127.0.0.1:1907:8080 -v "$work/data:/data" -e ADMIN_TOKEN=ci-dummy-admin-not-a-real-secret-123456 -e SUBSCRIPTION_TOKEN=ci-dummy-sub-not-a-real-secret-123456 -e PUBLIC_BASE=http://127.0.0.1:1907 live-direct:test
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:1907/health; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:1907/health
+          test "$(docker inspect -f '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}}' live-direct-ci)" = '10001:10001 true'
+          docker exec live-direct-ci python3 -c "from pathlib import Path; from live_direct.config import ConfigStore; p=Path('/data/config.json'); s=ConfigStore(p); s.update({'douyin':{'count':2}}); assert ConfigStore(p).get()['douyin']['count']==2; assert p.stat().st_mode & 0o777 == 0o600"
+          docker restart live-direct-ci
+          docker exec live-direct-ci python3 -c "from pathlib import Path; from live_direct.config import ConfigStore; assert ConfigStore(Path('/data/config.json')).get()['douyin']['count']==2"
