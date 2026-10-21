@@ -118,7 +118,7 @@ class Engine:
             return True
 
     def maybe_refresh(self):
-        if time.monotonic() - self.updated > 120:
+        if self.updated == 0 or time.monotonic() - self.updated > 120:
             self.start_refresh()
 
     def status(self):

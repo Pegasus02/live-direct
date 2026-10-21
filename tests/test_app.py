@@ -90,6 +90,12 @@ class AppTests(unittest.TestCase):
         self.assertTrue(entered.wait(2))
         self.engine.invalidate(); release.set(); t.join(3)
         self.assertFalse(self.engine.channels)
+    def test_cold_refresh_on_recently_booted_system(self):
+        from unittest.mock import patch
+        self.engine.updated = 0
+        with patch('live_direct.app.time.monotonic', return_value=5), patch.object(self.engine, 'start_refresh') as start:
+            self.engine.maybe_refresh()
+            start.assert_called_once()
     def test_public_base_rejects_invalid_values(self):
         for base in ['http://localhost:bad', 'http://localhost:99999', 'http://local\\nhost']:
             with self.assertRaises(ValueError):
