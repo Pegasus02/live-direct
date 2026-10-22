@@ -147,8 +147,6 @@ class Douyin:
             raise ProviderError('Douyin reflow room identity mismatch')
         if str(room.get('id_str') or '') != str(internal):
             raise ProviderError('Douyin reflow internal identity mismatch')
-        if renew:
-            self._remember(rid, internal, source)
         if room.get('status') in (4, '4'):
             raise RoomOfflineError('Douyin room is offline')
         if room.get('status') not in (2, '2'):
@@ -159,6 +157,10 @@ class Douyin:
             raise ProviderError('Douyin reflow metadata unavailable') from None
         if not row or not isinstance(row['streams'], dict):
             raise ProviderError('Douyin reflow stream unavailable')
+        # A share identifies a broadcast, not a permanent anchor. An old ended
+        # broadcast must never overwrite a concurrently discovered live session.
+        if renew:
+            self._remember(rid, internal, source)
         return row
 
     def _shared_room(self, link, expected=None):
