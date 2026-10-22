@@ -176,7 +176,7 @@ for data in (play_fixture(), mixed, full, {'playurl_info': {}}, {'playurl_info':
 
 
 def scenario(name, responses, run):
-    client = Fake(responses)
+    client = Fake(responses, unreachable=responses.get('__unreachable', ()))
     try:
         out = run(client)
     except RoomOfflineError:
@@ -184,7 +184,7 @@ def scenario(name, responses, run):
     except ProviderError:
         out = {'error': 'ProviderError'}
     cases.append({'fn': 'scenario', 'args': [name, responses], 'expect': {'result': out, 'calls': [u for u, _ in client.calls],
-                                                                         'forms': client.forms}})
+                                                                         'forms': client.forms, 'probes': client.probes}})
 
 
 def channels(cs):
@@ -205,6 +205,13 @@ with patch('time.time', lambda: 1700000000.0):
                           '/getRoomPlayInfo': {'code': 0, 'data': play_fixture()}}, lambda c: [
         channels(bilibili.Bilibili(c).discover({'enabled': True, 'rooms': ['12'], 'areas': ['网游'], 'min_online': 10, 'sessdata': 'abc%2C1'})),
         stream(bilibili.Bilibili(c).resolve('12', {'quality': 0}))])
+    multi = play_fixture()
+    multi['playurl_info']['playurl']['stream'] += play_fixture(False)['playurl_info']['playurl']['stream']
+    for i, s in enumerate(multi['playurl_info']['playurl']['stream']):
+        s['format'][0]['codec'][0]['url_info'] = [{'host': f'https://cn-{i}{j}.bilivideo.com', 'extra': '?x=1'} for j in range(3)]
+    for unreachable in (['cn-00.', 'cn-01.'], ['bilivideo.com'], []):
+        scenario('bilibili-probe', {'/getRoomPlayInfo': {'code': 0, 'data': multi}, '__unreachable': unreachable}, lambda c: [
+            stream(bilibili.Bilibili(c).resolve('12', {})), stream(bilibili.Bilibili(c).resolve('12', {}, ('hls',)))])
     betard = {'room': {'room_id': 9999, 'show_status': 1, 'videoLoop': 0, 'nickname': 'Fixture &amp; anchor', 'room_name': 'Fixture title'}}
     listing = {'code': 0, 'data': {'rl': [{'rid': 9999, 'nn': 'dup', 'ol': 9}, {'rid': 42, 'nn': 'Hot', 'rn': 'Room', 'ol': 500},
                                           {'rid': 'bad/1', 'ol': 900}, {'rid': 7, 'ol': '3万'}]}}

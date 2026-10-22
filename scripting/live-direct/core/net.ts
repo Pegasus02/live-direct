@@ -1,6 +1,6 @@
 // 有界、无状态的上游请求（对应 live_direct/net.py）。只允许固定的官方接口域名，
 // 除抖音分享短链外不跟随重定向，登录 Cookie 只发给 B站 API。
-import { hasControl, ProviderError, splitUrl, type SplitUrl, urlencode, validateUrl } from "./util"
+import { hasControl, mediaUrl, ProviderError, splitUrl, type SplitUrl, urlencode, validateUrl } from "./util"
 
 export type TransportRequest = {
   method: "GET" | "POST" | "HEAD"
@@ -25,6 +25,7 @@ export const API_HOSTS = ["live.douyin.com", "api.live.bilibili.com", "passport.
   "www.douyu.com", "playweb.douyucdn.cn", "www.huya.com"]
 const POST_HOSTS = ["playweb.douyucdn.cn"]
 const TIMEOUT = 10
+const PROBE_TIMEOUT = 3
 const MAX_BYTES = 5_000_000
 const ALLOWED_HEADERS = ["user-agent", "accept", "accept-language", "referer", "cookie", "origin"]
 
@@ -41,6 +42,7 @@ export type Client = {
   fetchJsonWithCookies(url: string, headers?: Record<string, string>): Promise<{ cookies: { name: string; value: string }[]; json: any }>
   resolveDouyinShare(url: string): Promise<string>
   fetchDouyinReflow(roomId: string): Promise<any>
+  probeMedia(url: string, platform: string, format: "flv" | "hls"): Promise<boolean>
 }
 
 function parseJson(text: string): any {
@@ -171,6 +173,26 @@ export function createClient(transport: Transport): Client {
       }
       checkBody(response)
       return parseJson(response.text)
+    },
+
+    /** 像跟随 302 的播放器一样请求可信 CDN 地址：不带 Referer/Cookie、不跟随跳转。
+     *  有的 CDN 节点拒绝无请求头的访问或 TLS 失败，平台据此跳过。 */
+    async probeMedia(url, platform, format) {
+      let target: string
+      try {
+        target = mediaUrl(url, platform, format)
+      } catch {
+        return false
+      }
+      try {
+        const response = await transport({
+          method: "HEAD", url: target, timeout: PROBE_TIMEOUT,
+          headers: { "User-Agent": "Mozilla/5.0 LiveDirect/1.0", "Accept-Encoding": "identity" },
+        })
+        return response.status === 200 || response.status === 206
+      } catch {
+        return false
+      }
     },
   }
 }

@@ -16,6 +16,8 @@ from ._pool import fan_out
 API = 'https://api.live.bilibili.com'
 PASSPORT_API = 'https://passport.bilibili.com'
 REFERER = 'https://live.bilibili.com/'
+# CDN candidates probed per resolve before falling back to the best-ranked one.
+PROBE_LIMIT = 4
 # Common parent areas offered as shortcuts; other names/IDs still resolve via the area list API.
 AREAS = {'2': '网游', '3': '手游', '6': '单机游戏', '1': '娱乐', '5': '电台', '9': '虚拟主播',
          '10': '生活', '11': '知识', '13': '赛事'}
@@ -37,7 +39,8 @@ def normalize_room(value):
     return str(int(text))
 
 
-def select_stream(data, prefer_avc=True, formats=('flv', 'hls')):
+def rank_streams(data, prefer_avc=True, formats=('flv', 'hls')):
+    """Every trusted candidate, best first; equal ranks keep the API's host order."""
     candidates = []
     try:
         streams = data['playurl_info']['playurl']['stream']
@@ -68,7 +71,11 @@ def select_stream(data, prefer_avc=True, formats=('flv', 'hls')):
                                                      {'Referer': REFERER})))
     if not candidates:
         raise ProviderError('Bilibili room has no trusted playable stream')
-    return min(candidates, key=lambda c: c[0])[1]
+    return [stream for _, stream in sorted(candidates, key=lambda c: c[0])]
+
+
+def select_stream(data, prefer_avc=True, formats=('flv', 'hls')):
+    return rank_streams(data, prefer_avc, formats)[0]
 
 
 class Bilibili:
@@ -203,8 +210,9 @@ class Bilibili:
             if 'live_status' in data and data['live_status'] != 1:
                 raise RoomOfflineError('Bilibili room is offline')
             return data
+        prefer_avc = config.get('prefer_avc', True)
         data = play(wanted or 10000)
-        stream = select_stream(data, config.get('prefer_avc', True), formats)
+        stream = select_stream(data, prefer_avc, formats)
         if wanted == 0 and int(stream.quality or 0) >= 10000:
             # Highest means the highest advertised tier, but never retry a
             # silently downgraded anonymous request or trust arbitrary qn text.
@@ -216,8 +224,17 @@ class Bilibili:
                                         if isinstance(q, int) and 0 < q <= 30000)
             highest = max(accepted, default=0)
             if highest > int(stream.quality):
-                stream = select_stream(play(highest), config.get('prefer_avc', True), formats)
-        return stream
+                data = play(highest)
+        return self._reachable(rank_streams(data, prefer_avc, formats))
+
+    def _reachable(self, streams):
+        # Players follow the 302 without Referer: some cn-* FLV nodes then answer
+        # 403, and some gotcha nodes fail TLS on certain networks. Take the first
+        # candidate that answers a header-less HEAD, else keep the best-ranked.
+        for stream in streams[:PROBE_LIMIT]:
+            if self.client.probe_media(stream.url, 'bilibili', stream.format):
+                return stream
+        return streams[0]
 
     def qrcode_generate(self):
         payload = self.client.fetch_json(PASSPORT_API + '/x/passport-login/web/qrcode/generate', headers={'Accept': 'application/json'})

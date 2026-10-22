@@ -52,6 +52,28 @@ def media_url(url, platform, format):
         raise ProviderError('Untrusted media URL') from None
 
 
+PROBE_TIMEOUT = 3
+
+
+def probe_media(url, platform, format):
+    """HEAD a trusted CDN address the way a 302-following player would: no
+    Referer, no cookies, no redirects. Some CDN nodes reject header-less
+    requests or fail TLS, so providers use this to skip them."""
+    try:
+        p = urlsplit(media_url(url, platform, format))
+    except ProviderError:
+        return False
+    connection = http.client.HTTPSConnection(p.hostname, timeout=PROBE_TIMEOUT, context=ssl.create_default_context())
+    try:
+        connection.request('HEAD', p.path + ('?' + p.query if p.query else ''),
+                           headers={'User-Agent': 'Mozilla/5.0 LiveDirect/1.0', 'Accept-Encoding': 'identity'})
+        return connection.getresponse().status in (200, 206)
+    except (OSError, socket.timeout, ValueError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
 def _fetch(url, headers=None, return_headers=False, form=None):
     p = validate_url(url)
     if form is not None and p.hostname not in POST_HOSTS:

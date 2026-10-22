@@ -26,7 +26,7 @@ export const core = { util, config, douyin, bilibili, douyu, huya, engine: load(
 
 /** Same substring-matching fake as tests/test_providers.Fake. */
 function fake(responses) {
-  const calls = [], forms = []
+  const calls = [], forms = [], probes = []
   const find = (url, headers, form = null) => {
     calls.push(url)
     forms.push(form)
@@ -34,10 +34,14 @@ function fake(responses) {
     throw new Error("Unexpected fixture request " + url)
   }
   return {
-    calls, forms,
+    calls, forms, probes,
     fetchText: async (url, headers) => find(url, headers),
     fetchJson: async (url, headers, form) => find(url, headers, form ?? null),
     fetchJsonWithCookies: async (url, headers) => ({ cookies: [], json: find(url, headers) }),
+    probeMedia: async url => {
+      probes.push(url)
+      return !(responses.__unreachable ?? []).some(host => url.includes(host))
+    },
   }
 }
 
@@ -49,6 +53,7 @@ const scenarios = {
     stream(await new douyin.Douyin(c).resolve("123", {}))],
   bilibili: async c => [channels(await new bilibili.Bilibili(c).discover({ enabled: true, rooms: ["12"], areas: ["网游"], min_online: 10, sessdata: "abc%2C1" })),
     stream(await new bilibili.Bilibili(c).resolve("12", { quality: 0 }))],
+  "bilibili-probe": async c => [stream(await new bilibili.Bilibili(c).resolve("12", {})), stream(await new bilibili.Bilibili(c).resolve("12", {}, ["hls"]))],
   douyu: async c => [channels(await new douyu.Douyu(c).discover({ enabled: true, rooms: ["https://www.douyu.com/09999"], categories: ["娱乐"], count: 2, min_viewers: 5 })),
     stream(await new douyu.Douyu(c).resolve("9999", { quality: 0 }))],
   huya: async c => [channels(await new huya.Huya(c).discover({ enabled: true, rooms: ["vanity"], categories: ["网游"], count: 1 })),
@@ -75,7 +80,7 @@ const fns = {
       if (!(e instanceof util.ProviderError)) throw e
       result = { error: e instanceof util.RoomOfflineError ? "RoomOfflineError" : "ProviderError" }
     }
-    return { result, calls: client.calls, forms: client.forms }
+    return { result, calls: client.calls, forms: client.forms, probes: client.probes }
   },
 }
 

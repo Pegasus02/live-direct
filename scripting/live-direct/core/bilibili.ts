@@ -7,6 +7,8 @@ import { fanOut, mediaUrl, ProviderError, RoomOfflineError, TimeoutError, unique
 const API = "https://api.live.bilibili.com"
 const PASSPORT_API = "https://passport.bilibili.com"
 const REFERER = "https://live.bilibili.com/"
+// 每次解析最多探测的 CDN 候选数，都不通时退回排名第一的。
+export const PROBE_LIMIT = 4
 export const AREAS: Record<string, string> = {
   "2": "网游", "3": "手游", "6": "单机游戏", "1": "娱乐", "5": "电台", "9": "虚拟主播", "10": "生活", "11": "知识", "13": "赛事",
 }
@@ -31,7 +33,8 @@ function compareRank(a: number[], b: number[]) {
   return 0
 }
 
-export function selectStream(data: any, preferAvc = true, formats: Format[] = ALL_FORMATS): Stream {
+/** 所有可信候选，最优在前；同档保持接口给出的节点顺序。 */
+export function rankStreams(data: any, preferAvc = true, formats: Format[] = ALL_FORMATS): Stream[] {
   const streams = data?.playurl_info?.playurl?.stream
   if (data?.playurl_info?.playurl === undefined || streams === undefined) throw new ProviderError("Bilibili play data unavailable")
   const candidates: Candidate[] = []
@@ -62,7 +65,12 @@ export function selectStream(data: any, preferAvc = true, formats: Format[] = AL
     }
   }
   if (!candidates.length) throw new ProviderError("Bilibili room has no trusted playable stream")
-  return candidates.reduce((best, c) => compareRank(c.rank, best.rank) < 0 ? c : best).stream
+  // Array.prototype.sort 是稳定排序。
+  return candidates.sort((a, b) => compareRank(a.rank, b.rank)).map(c => c.stream)
+}
+
+export function selectStream(data: any, preferAvc = true, formats: Format[] = ALL_FORMATS): Stream {
+  return rankStreams(data, preferAvc, formats)[0]
 }
 
 export class Bilibili implements Provider {
@@ -189,8 +197,8 @@ export class Bilibili implements Provider {
       return data
     }
     const preferAvc = config.prefer_avc ?? true
-    const data = await play(wanted || 10000)
-    let stream = selectStream(data, preferAvc, formats)
+    let data = await play(wanted || 10000)
+    const stream = selectStream(data, preferAvc, formats)
     if (wanted === 0 && Number(stream.quality || 0) >= 10000) {
       // “最高”取接口宣称的最高档，但不重试被匿名降级的请求。
       const accepted: number[] = []
@@ -202,9 +210,18 @@ export class Bilibili implements Provider {
         }
       }
       const highest = Math.max(0, ...accepted)
-      if (highest > Number(stream.quality)) stream = selectStream(await play(highest), preferAvc, formats)
+      if (highest > Number(stream.quality)) data = await play(highest)
     }
-    return stream
+    return this.reachable(rankStreams(data, preferAvc, formats))
+  }
+
+  /** 播放器跟随 302 时不带 Referer：部分 cn-* FLV 节点会返回 403，部分 gotcha 节点在某些网络下 TLS 失败。
+   *  取第一个能通过无请求头 HEAD 的候选，都不通时保留排名第一的。 */
+  private async reachable(streams: Stream[]): Promise<Stream> {
+    for (const stream of streams.slice(0, PROBE_LIMIT)) {
+      if (await this.client.probeMedia(stream.url, "bilibili", stream.format)) return stream
+    }
+    return streams[0]
   }
 
   async qrcodeGenerate(): Promise<{ url: string; qrcode_key: string }> {
