@@ -170,6 +170,55 @@ class Engine:
                 lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
 
+    def douyu_diagnostic_playlist(self, public_base, sub_token):
+        """Separate APTV comparison list; never changes the production playlist."""
+        self.maybe_refresh()
+        with self.lock:
+            if not self.store.get()['douyu'].get('enabled') or 'douyu' not in self.providers:
+                raise LookupError()
+            first = next(((r, ch) for (p, r), ch in self.channels.items()
+                          if p == 'douyu' and re.fullmatch(r'[1-9][0-9]{0,11}', r)), None)
+            if first is None:
+                raise LookupError()
+            room, channel = first
+            title = clean_text(channel.name)
+        prefix = f'{public_base}/s/{sub_token}'
+        lines = ['#EXTM3U']
+        for label, route in (
+                ('baseline', f'live/douyu/{room}'),
+                ('hw-h5', f'probe/douyu/{room}/hw-h5'),
+                ('hs-h5', f'probe/douyu/{room}/hs-h5')):
+            lines.extend([f'#EXTINF:-1 tvg-id="douyu-diagnostic-{room}-{label}" '
+                          f'group-title="Douyu diagnostics",{title} · {label}',
+                          f'{prefix}/{route}'])
+        return ('\n'.join(lines) + '\n').encode()
+
+    def resolve_douyu_diagnostic(self, room, cdn):
+        # No URL/CDN input beyond two fixed names; no shared URL cache, so every
+        # probe checks the upstream advertised list again. Share the existing
+        # concurrency bound with normal playback instead of creating a new pool.
+        if cdn not in ('hw-h5', 'hs-h5') or not re.fullmatch(r'[1-9][0-9]{0,11}', room):
+            raise LookupError()
+        with self.lock:
+            cfg = self.store.get()['douyu']
+            provider = self.providers.get('douyu')
+            if not cfg.get('enabled') or provider is None or ('douyu', room) not in self.channels:
+                raise LookupError()
+            generation = self.generation
+            if not self.resolve_slots.acquire(blocking=False):
+                raise RuntimeError('busy')
+        try:
+            stream = provider.resolve_cdn(room, cfg, cdn)
+            if not safe_media(stream.url, 'douyu') or any(k.lower() == 'cookie' for k in stream.headers):
+                raise ValueError('invalid diagnostic media')
+            with self.lock:
+                if (generation != self.generation or ('douyu', room) not in self.channels
+                        or not self.store.get()['douyu'].get('enabled')):
+                    raise LookupError()
+            return stream
+        finally:
+            self.resolve_slots.release()
+
     def resolve(self, platform, room):
         with self.lock:
             cfg = self.store.get()
@@ -417,6 +466,22 @@ class Handler(BaseHTTPRequestHandler):
                 except RuntimeError:
                     return self.reply(503, b'Channels updating; retry shortly', headers={'Retry-After': '5'})
                 return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
+            if parts[3:] == ['diagnostics', 'douyu.m3u']:
+                try:
+                    playlist = self.app.engine.douyu_diagnostic_playlist(self.app.base, self.app.sub_token)
+                except LookupError:
+                    return self.reply(404)
+                return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
+            if (len(parts) == 7 and parts[3:5] == ['probe', 'douyu']
+                    and re.fullmatch(r'[1-9][0-9]{0,11}', parts[5])
+                    and parts[6] in ('hw-h5', 'hs-h5')):
+                try:
+                    stream = self.app.engine.resolve_douyu_diagnostic(parts[5], parts[6])
+                except LookupError:
+                    return self.reply(404)
+                except Exception:
+                    return self.reply(503)
+                return self.reply(302, headers={'Location': stream.url})
             if len(parts) == 6 and parts[3] == 'live' and ROOM.fullmatch(parts[5]):
                 self.app.engine.maybe_refresh()
                 try:

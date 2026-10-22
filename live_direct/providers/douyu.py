@@ -150,6 +150,42 @@ class Douyu:
         return common.discover('douyu', 'Douyu', self.warnings, manual, self._room, categories, category,
                                count, int(config.get('min_viewers', 0)))
 
+    def resolve_cdn(self, room_id, config, cdn):
+        """Diagnostic only: select a fixed line advertised by this fresh response.
+
+        Three fixed-host requests, no persistent state or default resolver changes.
+        Reuse this request's websec form for discovery and the selected line.
+        """
+        if cdn not in ('hw-h5', 'hs-h5'):
+            raise ProviderError('Unsupported Douyu diagnostic line')
+        rid = normalize_room(room_id)
+        payload = self.client.fetch_json(
+            ORIGIN + '/wgapi/livenc/liveweb/websec/getEncryption?did=' + DID,
+            headers=HEADERS)
+        if not isinstance(payload, dict) or payload.get('error') != 0:
+            raise ProviderError('Douyu play key unavailable')
+        form = sign(payload.get('data'), rid, int(time.time()))
+        form.update({'rate': str(int(config.get('quality', 0))), 'ver': PLAYER_VERSION,
+                     'iar': '0', 'ive': '0', 'rid': rid, 'hevc': '0', 'fa': '0', 'sov': '0'})
+        headers = dict(HEADERS, Origin=ORIGIN)
+        endpoint = PLAY_API + '/lapi/live/getH5PlayV1/' + rid
+        advertised = self.client.fetch_json(endpoint, headers=headers, form=dict(form))
+        if not isinstance(advertised, dict) or advertised.get('error') != 0:
+            raise ProviderError('Douyu play API request failed')
+        data = advertised.get('data')
+        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
+        if not isinstance(lines, list) or not any(
+                isinstance(line, dict) and line.get('cdn') == cdn for line in lines):
+            raise ProviderError('Douyu diagnostic line not advertised')
+        form['cdn'] = cdn
+        selected = self.client.fetch_json(endpoint, headers=headers, form=form)
+        if not isinstance(selected, dict) or selected.get('error') != 0:
+            raise ProviderError('Douyu play API request failed')
+        data = selected.get('data')
+        if not isinstance(data, dict) or data.get('rtmp_cdn') != cdn:
+            raise ProviderError('Douyu diagnostic line not selected')
+        return stream_from(data)
+
     def resolve(self, room_id, config):
         rid = self._room(normalize_room(room_id))['id']
         data = self._play(rid, int(config.get('quality', 0)))
