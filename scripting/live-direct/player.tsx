@@ -1,4 +1,4 @@
-import { AVPlayerView, Button, HStack, Navigation, NavigationStack, ProgressView, Spacer, Text, Toolbar, ToolbarItem, useEffect, useMemo, useObservable, useState, VStack } from "scripting"
+import { AVPlayerView, Button, HStack, Navigation, NavigationStack, ProgressView, Spacer, Text, useEffect, useMemo, useObservable, useState, VStack } from "scripting"
 import { type Channel, HLS_PLATFORMS, LABELS, resolveStream } from "./api"
 import { EXTERNAL_PLAYERS, readSettings } from "./store"
 
@@ -86,10 +86,10 @@ function PlayerPage({ channel }: { channel: Channel }) {
       navigationTitle={channel.name}
       navigationBarTitleDisplayMode="inline"
       background="black"
-      toolbar={<Toolbar>
-        <ToolbarItem placement="cancellationAction"><Button title="关闭" action={() => { player.stop(); dismiss() }} /></ToolbarItem>
-        <ToolbarItem placement="topBarTrailing"><Button title="重试" systemImage="arrow.clockwise" action={() => { player.stop(); setAttempt(attempt + 1) }} /></ToolbarItem>
-      </Toolbar>}
+      toolbar={{
+        cancellationAction: <Button title="关闭" action={() => { player.stop(); dismiss() }} />,
+        topBarTrailing: <Button title="重试" systemImage="arrow.clockwise" action={() => { player.stop(); setAttempt(attempt + 1) }} />,
+      }}
     >
       <Spacer />
       {state === "error"

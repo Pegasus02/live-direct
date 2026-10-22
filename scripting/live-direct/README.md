@@ -15,8 +15,8 @@
 
 ## 安装
 
-1. 在 Scripting 里新建一个脚本（例如叫 `Live Direct`），把本目录的 `index.tsx`、`api.ts`、`store.ts`、`player.tsx`、`settings-page.tsx`、`server-page.tsx` 放进去（`script.json` 可选）。也可以用 `scripting-cli` 同步整个目录。
-2. 运行脚本，按提示粘贴后台“订阅”里的私密订阅地址：`https://你的地址/s/订阅令牌/interface.m3u`。如果剪贴板里已有订阅地址，会自动填入。
+1. 在 Scripting 里新建一个名为 `Live Direct` 的脚本，把本目录的 `script.json`、`index.tsx`、`api.ts`、`store.ts`、`player.tsx`、`settings-page.tsx`、`server-page.tsx` 放进去。也可以在电脑上用 `scripting-cli` 同步（见下文“开发”）。
+2. 运行脚本，按提示粘贴后台“订阅”里的私密订阅地址：`https://你的地址/s/订阅令牌/interface.m3u`。脚本不会自动读取剪贴板。
 3. 可选：右上角 `…` → 设置 → 填写管理员令牌，就能在“服务器与主播管理”里添加主播。
 
 订阅链接和管理员令牌只存在本机钥匙串（Keychain），不进 Storage、不写日志。
@@ -36,3 +36,9 @@
 - 内置播放时脚本先自己跟随服务端的 302 拿到平台 CDN 的 HTTPS 地址再交给 AVPlayer，因此服务地址是内网 `http://` 时也能播；302 无法携带 Referer 等请求头，个别 CDN 若要求请求头可能播不了，这时改用外部播放器。
 - 关注列表只记住在订阅中出现过的频道。订阅里只有正在直播的频道，所以想长期关注的主播请先在“服务器与主播管理”里添加，开播后它就会出现在列表里，再点星标即可。
 - 这些流程已在本地模拟服务端上验证；尚未在真机 Scripting 上验收，平台 HLS 能否直连播放取决于各 CDN。
+
+## 开发
+
+按 [scripting-app-development](https://github.com/ScriptingApp/scripting-app-development) 的流程，在电脑上运行 `npx scripting-cli start`（需 Node.js 20+），App 连接后会同步当前版本的 `.d.ts` 类型声明，可以用它对本目录做类型检查，并实时同步到手机调试。
+
+目前这些文件只做过 TSX 语法检查，还没有用 App 同步的类型声明做类型检查；`api.ts` 的订阅解析、302 跟随和管理接口在本地模拟服务端上跑通过。页面布局、AVPlayerView 播放、外部 App 跳转仍需在真机上验收。

@@ -1,4 +1,4 @@
-import { Button, HStack, Image, List, Navigation, ProgressView, Section, Spacer, Text, Toolbar, ToolbarItem, useEffect, useState, VStack } from "scripting"
+import { Button, HStack, Image, List, Navigation, ProgressView, Section, Spacer, Text, useEffect, useState, VStack } from "scripting"
 import { fetchConfig, fetchStatus, LABELS, type Platform, PLATFORMS, readAdminToken, requestRefresh, type ServerConfig, type ServerStatus, updateConfig } from "./api"
 
 const STATUS_TEXT: Record<string, [string, string]> = {
@@ -99,10 +99,10 @@ export function ServerPage({ onChanged }: { onChanged: () => void }) {
     navigationTitle="服务器"
     navigationBarTitleDisplayMode="inline"
     refreshable={load}
-    toolbar={<Toolbar>
-      <ToolbarItem placement="cancellationAction"><Button title="关闭" action={dismiss} /></ToolbarItem>
-      <ToolbarItem placement="topBarTrailing">{busy ? <ProgressView /> : <Button title="刷新频道" systemImage="arrow.triangle.2.circlepath" action={() => { void refresh() }} />}</ToolbarItem>
-    </Toolbar>}
+    toolbar={{
+      cancellationAction: <Button title="关闭" action={dismiss} />,
+      topBarTrailing: busy ? <ProgressView /> : <Button title="刷新频道" systemImage="arrow.triangle.2.circlepath" action={() => { void refresh() }} />,
+    }}
   >
     {error ? <Section><Text foregroundStyle="systemRed">{error}</Text></Section> : null}
     {status ? <Section header={<Text>状态</Text>} footer={<Text>{`订阅共 ${status.channel_count} 个频道${status.refreshing ? "，正在刷新…" : ""}`}</Text>}>

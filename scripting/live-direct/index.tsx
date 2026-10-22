@@ -1,4 +1,4 @@
-import { Button, ContentUnavailableView, Group, HStack, Image, List, Menu, Navigation, NavigationStack, Script, Section, Spacer, Text, Toolbar, ToolbarItem, useEffect, useState, VStack } from "scripting"
+import { Button, ContentUnavailableView, Group, HStack, Image, List, Menu, Navigation, NavigationStack, Script, Section, Spacer, Text, useEffect, useState, VStack } from "scripting"
 import { type Channel, fetchChannels, LABELS, type Platform, PLATFORMS, readSubscription } from "./api"
 import { canPlayInApp, openExternal, play, presentPlayer } from "./player"
 import { ServerPage } from "./server-page"
@@ -132,22 +132,20 @@ function HomePage() {
     navigationTitle="Live Direct"
     refreshable={load}
     searchable={{ value: query, onChanged: setQuery, prompt: "搜索主播、标题或房间号" }}
-    toolbar={<Toolbar>
-      <ToolbarItem placement="cancellationAction"><Button title="关闭" action={dismiss} /></ToolbarItem>
-      <ToolbarItem placement="topBarTrailing">
+    toolbar={{
+      cancellationAction: <Button title="关闭" action={dismiss} />,
+      topBarTrailing: [
         <Menu label={<Image systemName={platform === "all" ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill"} />}>
           <Button title="全部平台" systemImage={platform === "all" ? "checkmark" : undefined} action={() => setPlatform("all")} />
           {PLATFORMS.map(p => <Button key={p} title={LABELS[p]} systemImage={platform === p ? "checkmark" : undefined} action={() => setPlatform(p)} />)}
-        </Menu>
-      </ToolbarItem>
-      <ToolbarItem placement="topBarTrailing">
+        </Menu>,
         <Menu label={<Image systemName="ellipsis.circle" />}>
           <Button title="服务器与主播管理" systemImage="server.rack" action={() => { void Navigation.present({ element: <NavigationStack><ServerPage onChanged={() => { void load() }} /></NavigationStack> }) }} />
           <Button title={showAll ? "只看关注" : "显示全部频道"} systemImage={showAll ? "star" : "list.bullet"} action={() => { setShowAll(saveSettings({ showAll: !showAll }).showAll) }} />
           <Button title="设置" systemImage="gearshape" action={() => { void openSettings() }} />
-        </Menu>
-      </ToolbarItem>
-    </Toolbar>}
+        </Menu>,
+      ],
+    }}
     overlay={state === "error"
       ? <ContentUnavailableView title="无法读取频道" systemImage="exclamationmark.triangle" description={error} />
       : empty

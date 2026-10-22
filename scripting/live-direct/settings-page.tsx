@@ -1,4 +1,4 @@
-import { Button, Form, LabeledContent, Navigation, Picker, Section, Text, TextField, Toggle, Toolbar, ToolbarItem, useState } from "scripting"
+import { Button, Form, LabeledContent, Navigation, Picker, Section, Text, TextField, Toggle, useState } from "scripting"
 import { parseSubscription, readAdminToken, readSubscription, saveAdminToken, saveSubscription } from "./api"
 import { EXTERNAL_PLAYERS, type ExternalPlayer, type PlayMode, readSettings, saveSettings } from "./store"
 
@@ -8,11 +8,10 @@ function mask(value: string): string {
 
 /** 首次运行或订阅无效时也用这个提示框收集订阅链接。 */
 export async function promptSubscription(): Promise<boolean> {
-  const fromClipboard = (await Pasteboard.getString())?.trim() ?? ""
   const input = await Dialog.prompt({
     title: "私密订阅链接",
     message: "在 Live Direct 后台复制订阅地址，形如 https://你的地址/s/订阅令牌/interface.m3u。只保存在本机钥匙串。",
-    defaultValue: parseSubscription(fromClipboard) ? fromClipboard : readSubscription(),
+    defaultValue: readSubscription(),
     placeholder: "https://…/s/…/interface.m3u",
     keyboardType: "URL",
     confirmLabel: "保存",
@@ -49,7 +48,7 @@ export function SettingsPage() {
   return <Form
     navigationTitle="设置"
     navigationBarTitleDisplayMode="inline"
-    toolbar={<Toolbar><ToolbarItem placement="confirmationAction"><Button title="完成" action={dismiss} /></ToolbarItem></Toolbar>}
+    toolbar={{ confirmationAction: <Button title="完成" action={dismiss} /> }}
   >
     <Section header={<Text>服务器</Text>} footer={<Text>订阅只用于读取频道列表和播放地址；管理员令牌用于“服务器”页面。</Text>}>
       <LabeledContent title="地址" value={server ?? "未设置"} />
