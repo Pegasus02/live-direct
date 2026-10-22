@@ -1,66 +1,46 @@
-import { Button, Form, LabeledContent, Navigation, Picker, Section, Text, TextField, Toggle, useState } from "scripting"
-import { parseSubscription, readAdminToken, readSubscription, saveAdminToken, saveSubscription } from "./api"
-import { EXTERNAL_PLAYERS, type ExternalPlayer, type PlayMode, readSettings, saveSettings } from "./store"
-
-function mask(value: string): string {
-  return value.length <= 8 ? "已设置" : value.slice(0, 4) + "…" + value.slice(-4)
-}
-
-/** 首次运行或订阅无效时也用这个提示框收集订阅链接。 */
-export async function promptSubscription(): Promise<boolean> {
-  const input = await Dialog.prompt({
-    title: "私密订阅链接",
-    message: "在 Live Direct 后台复制订阅地址，形如 https://你的地址/s/订阅令牌/interface.m3u。只保存在本机钥匙串。",
-    defaultValue: readSubscription(),
-    placeholder: "https://…/s/…/interface.m3u",
-    keyboardType: "URL",
-    confirmLabel: "保存",
-  })
-  if (input == null) return false
-  if (input.trim() && !parseSubscription(input)) {
-    await Dialog.alert({ title: "格式不对", message: "订阅链接应以 /s/订阅令牌/interface.m3u 结尾。" })
-    return false
-  }
-  saveSubscription(input)
-  return true
-}
+import { Button, Form, LabeledContent, Picker, Section, Text, TextField, Toggle, useState } from "scripting"
+import { backend, useBackend } from "./backend"
+import { EXTERNAL_PLAYERS, type ExternalPlayer, type PlayMode, readSettings, saveSettings, type Settings } from "./store"
 
 export function SettingsPage() {
-  const dismiss = Navigation.useDismiss()
+  const b = useBackend()
   const [settings, setSettings] = useState(readSettings)
-  const [subscription, setSubscription] = useState(readSubscription)
-  const [adminToken, setAdminToken] = useState(readAdminToken)
-  const update = (patch: Parameters<typeof saveSettings>[0]) => setSettings(saveSettings(patch))
-  const server = parseSubscription(subscription)?.base
-
-  async function editAdminToken() {
-    const input = await Dialog.prompt({
-      title: "管理员令牌（可选）",
-      message: "填写后可在脚本里添加/删除主播、刷新频道。令牌只存本机钥匙串；不需要这些功能可以留空。",
-      obscureText: true,
-      confirmLabel: "保存",
-    })
-    if (input == null) return
-    saveAdminToken(input)
-    setAdminToken(readAdminToken())
+  const update = (patch: Partial<Settings>) => setSettings(saveSettings(patch))
+  // 端口和局域网开关要重启本机服务才生效。
+  const restart = (patch: Partial<Settings>) => {
+    update(patch)
+    if (b.running) b.startServer()
   }
 
-  return <Form
-    navigationTitle="设置"
-    navigationBarTitleDisplayMode="inline"
-    toolbar={{ confirmationAction: <Button title="完成" action={dismiss} /> }}
-  >
-    <Section header={<Text>服务器</Text>} footer={<Text>订阅只用于读取频道列表和播放地址；管理员令牌用于“服务器”页面。</Text>}>
-      <LabeledContent title="地址" value={server ?? "未设置"} />
-      <Button title={subscription ? "修改订阅链接" : "填写订阅链接"} action={async () => { if (await promptSubscription()) setSubscription(readSubscription()) }} />
-      <LabeledContent title="管理员令牌" value={adminToken ? mask(adminToken) : "未设置"} />
-      <Button title={adminToken ? "修改管理员令牌" : "填写管理员令牌"} action={() => { void editAdminToken() }} />
-      {adminToken ? <Button title="清除管理员令牌" role="destructive" action={() => { saveAdminToken(""); setAdminToken("") }} /> : null}
+  return <Form navigationTitle="设置">
+    <Section header={<Text>本机服务</Text>} footer={<Text>{
+      "开启局域网访问后，同一 Wi-Fi 下的设备（如 Apple TV 上的 APTV）可以用局域网订阅地址；地址里带随机令牌，不要分享给别人。"
+      + "后台保活会在 Scripting 切到后台时申请继续运行，耗电会增加，iOS 仍可能结束进程。"
+    }</Text>}>
+      <Button action={async () => {
+        const input = await Dialog.prompt({ title: "端口", message: "1024 – 65535", defaultValue: String(settings.port), keyboardType: "numberPad", confirmLabel: "保存" })
+        const port = Number(input?.trim())
+        if (input == null) return
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+          await Dialog.alert({ title: "端口无效", message: "请输入 1024 到 65535 之间的整数" })
+          return
+        }
+        restart({ port })
+      }}>
+        <LabeledContent title="端口" value={String(settings.port)} />
+      </Button>
+      <Toggle title="允许局域网访问" value={settings.allowLan} onChanged={value => restart({ allowLan: value })} />
+      <Toggle title="启动脚本时自动开启服务" value={settings.autoStart} onChanged={value => update({ autoStart: value })} />
+      <Toggle title="后台保活" value={settings.keepAlive} onChanged={value => update({ keepAlive: value })} />
+      <Button title="重置订阅令牌" role="destructive" action={async () => {
+        const ok = await Dialog.confirm({ title: "重置订阅令牌？", message: "旧的订阅地址会立即失效，需要在播放器里重新添加。", confirmLabel: "重置" })
+        if (ok) backend.resetToken()
+      }} />
     </Section>
 
     <Section header={<Text>播放</Text>} footer={<Text>{
-      "内置播放器使用系统 AVPlayer，只能播放 HLS：抖音、B站、虎牙会向服务端请求 HLS 流（需服务端支持 /hls/ 路由），斗鱼只有 FLV，始终用外部播放器。\n" +
-      "APTV 没有公开的“播放指定地址”链接：选 APTV 时会复制播放地址并打开 APTV，在已添加的订阅里点同名频道即可。"
+      "内置播放器使用系统 AVPlayer，只能播放 HLS：抖音、B站、虎牙会单独取 HLS 流，斗鱼只有 FLV，只能用外部播放器。\n"
+      + "APTV 没有公开的“播放指定地址”链接：选 APTV 时会复制播放地址并打开 APTV，在已添加的本机订阅里点同名频道即可。"
     }</Text>}>
       <Picker title="点击频道时" value={settings.playMode} onChanged={(value: PlayMode) => update({ playMode: value })} pickerStyle="menu">
         <Text tag="ask">每次询问</Text>
@@ -75,8 +55,11 @@ export function SettingsPage() {
         : <LabeledContent title="URL Scheme" value={EXTERNAL_PLAYERS[settings.externalPlayer].template} />}
     </Section>
 
-    <Section header={<Text>列表</Text>}>
-      <Toggle title="显示全部频道（不只关注）" value={settings.showAll} onChanged={value => update({ showAll: value })} />
+    <Section header={<Text>关于</Text>} footer={<Text>{
+      "解析逻辑移植自 Live Direct 服务端，在手机上直接请求各平台公开接口，不经过任何中转服务器。"
+      + "仅在有权访问的范围内使用，遵守平台条款与当地法律。本脚本以 GPL-3.0 发布。"
+    }</Text>}>
+      <LabeledContent title="频道数" value={String(b.engine.channels.size)} />
     </Section>
   </Form>
 }

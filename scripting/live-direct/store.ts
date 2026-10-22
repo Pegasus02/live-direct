@@ -1,7 +1,90 @@
+// 本机持久化：配置存 Storage（不含 SESSDATA），SESSDATA 与订阅令牌存钥匙串。
 import { useEffect, useState } from "scripting"
-import type { Channel, Platform } from "./api"
+import type { Channel, Platform } from "./core/common"
+import { type Config, withDefaults } from "./core/config"
 
-// ---- 关注列表：本地保存，不影响服务端配置 ----
+const CONFIG_KEY = "live-direct.config"
+const SESSDATA_KEY = "live-direct.sessdata"
+const TOKEN_KEY = "live-direct.token"
+
+export function loadConfig(): Config {
+  const saved = Storage.get<any>(CONFIG_KEY)
+  const config = withDefaults(saved)
+  config.bilibili.sessdata = Keychain.get(SESSDATA_KEY) ?? ""
+  return withDefaults(config)
+}
+
+export function saveConfig(config: Config) {
+  const { sessdata, ...bilibili } = config.bilibili
+  Storage.set(CONFIG_KEY, { ...config, bilibili })
+  if (sessdata) Keychain.set(SESSDATA_KEY, sessdata, { synchronizable: false })
+  else Keychain.remove(SESSDATA_KEY)
+}
+
+function randomToken(): string {
+  try {
+    return Crypto.generateSymmetricKey(32).toBase64String().replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+  } catch {
+    return Array.from({ length: 43 }, () => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[Math.floor(Math.random() * 64)]).join("")
+  }
+}
+
+/** 订阅令牌：首次运行生成，可在设置里重置（重置后需在播放器里重新添加订阅）。 */
+export function subscriptionToken(reset = false): string {
+  let token = reset ? "" : Keychain.get(TOKEN_KEY) ?? ""
+  if (!/^[A-Za-z0-9_-]{32,}$/.test(token)) {
+    token = randomToken()
+    Keychain.set(TOKEN_KEY, token, { synchronizable: false })
+  }
+  return token
+}
+
+// ---- 应用设置 ----
+
+export type PlayMode = "ask" | "external" | "inapp"
+export type ExternalPlayer = "aptv" | "vlc" | "infuse" | "custom"
+
+export type Settings = {
+  port: number
+  /** 允许局域网设备（如 Apple TV 上的 APTV）访问本机订阅。 */
+  allowLan: boolean
+  /** 启动脚本时自动开启本机服务。 */
+  autoStart: boolean
+  /** 进入后台时申请保活，让 APTV 等播放器能继续取地址。 */
+  keepAlive: boolean
+  playMode: PlayMode
+  externalPlayer: ExternalPlayer
+  customTemplate: string
+}
+
+const SETTINGS_KEY = "live-direct.settings"
+export const DEFAULT_SETTINGS: Settings = {
+  port: 19070, allowLan: false, autoStart: true, keepAlive: true, playMode: "ask", externalPlayer: "aptv", customTemplate: "",
+}
+
+export const EXTERNAL_PLAYERS: Record<ExternalPlayer, { label: string; template: string }> = {
+  // APTV 没有公开“播放指定地址”的链接格式：复制地址后用 aptv:// 打开 APTV，
+  // 在已添加的本机订阅里点同名频道即可；知道可用格式时改用“自定义”。
+  aptv: { label: "APTV", template: "aptv://" },
+  vlc: { label: "VLC", template: "vlc-x-callback://x-callback-url/stream?url={url}" },
+  infuse: { label: "Infuse", template: "infuse://x-callback-url/play?url={url}" },
+  custom: { label: "自定义", template: "" },
+}
+
+export function readSettings(): Settings {
+  const saved = Storage.get<Partial<Settings>>(SETTINGS_KEY)
+  const merged = { ...DEFAULT_SETTINGS, ...(saved && typeof saved === "object" ? saved : {}) }
+  if (!Number.isInteger(merged.port) || merged.port < 1024 || merged.port > 65535) merged.port = DEFAULT_SETTINGS.port
+  return merged
+}
+
+export function saveSettings(patch: Partial<Settings>): Settings {
+  const next = { ...readSettings(), ...patch }
+  Storage.set(SETTINGS_KEY, next)
+  return next
+}
+
+// ---- 关注列表：只存本机 ----
 
 const FAVORITES_KEY = "live-direct.favorites"
 
@@ -9,6 +92,7 @@ const FAVORITES_KEY = "live-direct.favorites"
 export type Favorite = { key: string; platform: Platform; room: string; name: string; logo: string; addedAt: number }
 
 const listeners = new Set<() => void>()
+export const channelKey = (c: { platform: string; room_id: string }) => `${c.platform}-${c.room_id}`
 
 export function readFavorites(): Favorite[] {
   const saved = Storage.get<Favorite[]>(FAVORITES_KEY)
@@ -20,19 +104,15 @@ function saveFavorites(favorites: Favorite[]) {
   for (const listener of listeners) listener()
 }
 
-export function isFavorite(key: string): boolean {
-  return readFavorites().some(item => item.key === key)
-}
-
 /** 返回切换后的关注状态。 */
 export function toggleFavorite(channel: Channel): boolean {
+  const key = channelKey(channel)
   const favorites = readFavorites()
-  if (favorites.some(item => item.key === channel.key)) {
-    saveFavorites(favorites.filter(item => item.key !== channel.key))
+  if (favorites.some(item => item.key === key)) {
+    saveFavorites(favorites.filter(item => item.key !== key))
     return false
   }
-  const { key, platform, room, name, logo } = channel
-  saveFavorites([...favorites, { key, platform, room, name, logo, addedAt: Date.now() }])
+  saveFavorites([...favorites, { key, platform: channel.platform, room: channel.room_id, name: channel.name, logo: channel.logo, addedAt: Date.now() }])
   return true
 }
 
@@ -52,14 +132,13 @@ export function moveFavorite(key: string, offset: number) {
 
 /** 刷新频道时顺手更新关注主播的名字与头像。 */
 export function syncFavorites(channels: Channel[]) {
-  const live = new Map(channels.map(channel => [channel.key, channel]))
-  const favorites = readFavorites()
+  const live = new Map(channels.map(c => [channelKey(c), c]))
   let changed = false
-  const next = favorites.map(item => {
-    const channel = live.get(item.key)
-    if (!channel || (channel.name === item.name && channel.logo === item.logo)) return item
+  const next = readFavorites().map(item => {
+    const c = live.get(item.key)
+    if (!c || (c.name === item.name && c.logo === item.logo)) return item
     changed = true
-    return { ...item, name: channel.name || item.name, logo: channel.logo || item.logo }
+    return { ...item, name: c.name || item.name, logo: c.logo || item.logo }
   })
   if (changed) saveFavorites(next)
 }
@@ -72,40 +151,4 @@ export function useFavorites(): Favorite[] {
     return () => { listeners.delete(listener) }
   }, [])
   return favorites
-}
-
-// ---- 播放方式 ----
-
-export type PlayMode = "ask" | "external" | "inapp"
-export type ExternalPlayer = "aptv" | "vlc" | "infuse" | "custom"
-
-export type Settings = {
-  playMode: PlayMode
-  externalPlayer: ExternalPlayer
-  /** 自定义 URL Scheme，{url} 替换为编码后的播放地址。 */
-  customTemplate: string
-  showAll: boolean
-}
-
-const SETTINGS_KEY = "live-direct.settings"
-const DEFAULT_SETTINGS: Settings = { playMode: "ask", externalPlayer: "aptv", customTemplate: "", showAll: true }
-
-export const EXTERNAL_PLAYERS: Record<ExternalPlayer, { label: string; template: string }> = {
-  // APTV 没有公开“播放指定地址”的链接格式：复制地址后用 aptv:// 打开 APTV，
-  // 在已添加的订阅里找到同名频道即可；知道可用格式时改用“自定义”。
-  aptv: { label: "APTV", template: "aptv://" },
-  vlc: { label: "VLC", template: "vlc-x-callback://x-callback-url/stream?url={url}" },
-  infuse: { label: "Infuse", template: "infuse://x-callback-url/play?url={url}" },
-  custom: { label: "自定义", template: "" },
-}
-
-export function readSettings(): Settings {
-  const saved = Storage.get<Partial<Settings>>(SETTINGS_KEY)
-  return { ...DEFAULT_SETTINGS, ...(saved && typeof saved === "object" ? saved : {}) }
-}
-
-export function saveSettings(patch: Partial<Settings>): Settings {
-  const next = { ...readSettings(), ...patch }
-  Storage.set(SETTINGS_KEY, next)
-  return next
 }

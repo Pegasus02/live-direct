@@ -19,6 +19,27 @@ jobs:
         run: python -B -m unittest discover -s tests -v
       - name: JavaScript syntax
         run: node --check live_direct/web/admin.js
+  scripting:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install TypeScript
+        run: npm install --no-save --prefix "$RUNNER_TEMP/ts" typescript@5
+      - name: Strict type check of the ported core
+        run: '"$RUNNER_TEMP/ts/node_modules/.bin/tsc" --noEmit --strict --target ES2020 --lib ES2021,DOM scripting/live-direct/core/*.ts'
+      - name: TypeScript port matches the Python backend
+        env:
+          NODE_PATH: ${{ runner.temp }}/ts/node_modules
+        run: |
+          python3 scripting/tests/gen_cases.py > "$RUNNER_TEMP/cases.json"
+          node scripting/tests/run.mjs "$RUNNER_TEMP/cases.json"
+          node scripting/tests/backend.test.mjs
   container:
     runs-on: ubuntu-latest
     steps:

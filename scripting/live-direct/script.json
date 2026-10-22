@@ -2,6 +2,6 @@
   "name": "Live Direct",
   "icon": "play.tv",
   "color": "rgba(255, 59, 48, 1)",
-  "version": "1.0.1",
-  "description": "Live Direct 的 Scripting 控制面板：读取私密订阅，管理关注列表，一键跳转 APTV / VLC / Infuse 或在 Scripting 内置播放器（HLS）中观看；可选填管理员令牌后直接添加主播、刷新频道。"
+  "version": "2.0.0",
+  "description": "不需要服务器的 Live Direct：在手机上解析抖音、B站、斗鱼、虎牙直播，提供完整后台、本机 M3U 订阅（APTV 可用）、关注列表与内置播放器。"
 }
