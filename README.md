@@ -57,6 +57,12 @@ python3 -m live_direct.app
 
 默认所有平台均关闭。已有配置文件（包括含 `douyin.share_links` 的线上配置）原样加载，并自动补上斗鱼、虎牙的关闭默认值。配置不会从其他服务偷偷读取，更不会自动迁移账号Cookie。已有服务应保留到独立应用验收完成，再另行确认停机。
 
+## iOS Scripting 客户端
+
+[`scripting/live-direct`](scripting/live-direct/) 是给 iOS [Scripting](https://apps.apple.com/app/scripting/id6479691128) App 用的控制面板：读取私密订阅，维护本机关注列表，一键跳转 APTV / VLC / Infuse，或用系统播放器直接在 Scripting 里看；填写管理员令牌后还能添加/删除主播、刷新频道。详见该目录的 README。
+
+系统播放器不支持 FLV，因此订阅路径另提供 `/s/订阅令牌/hls/平台/房间`：与 `/live/` 相同的校验和缓存，只接受 HLS 流并 302 跳转。抖音、B站、虎牙支持；斗鱼只有 FLV，该路径返回404。M3U 订阅内容不变，APTV 等播放器继续使用 `/live/`。
+
 ## 可选免登录后台
 
 默认 `ADMIN_AUTH_ENABLED=true`，缺省也保持登录保护。仅在完全可信内网/VPN且用户明确接受风险时，可在.env设置 `ADMIN_AUTH_ENABLED=false` 后重建容器。此时 `/admin` 和管理API不再要求密码或Cookie，`/login` 跳转后台；ADMIN_TOKEN可不配置。所有能连到端口的人都可修改配置并获取订阅URL。严禁直接开放公网；订阅令牌仍有效，但同一网络用户可以从开放后台获取它。写请求仍需同源CSRF令牌，CORS不放开。重新设true并配置有效ADMIN_TOKEN即可恢复登录。此选项不保证解决浏览器白屏，白屏根因仍应单独排查。

@@ -170,14 +170,16 @@ class Engine:
                 lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
 
-    def resolve(self, platform, room):
+    def resolve(self, platform, room, hls=False):
         with self.lock:
             cfg = self.store.get()
             if platform not in self.providers or not cfg[platform].get('enabled'):
                 raise LookupError()
             if (platform, room) not in self.channels:
                 raise LookupError()
-            key = (self.generation, platform, room)
+            if hls and not getattr(self.providers[platform], 'hls', False):
+                raise LookupError()
+            key = (self.generation, platform, room, hls)
             cached = self.cache.get(key)
             if cached and cached[0] > time.monotonic():
                 if cached[1] is None:
@@ -201,7 +203,8 @@ class Engine:
         stream = None
         succeeded = False
         try:
-            stream = self.providers[platform].resolve(room, cfg[platform])
+            stream = (self.providers[platform].resolve(room, cfg[platform], formats=('hls',)) if hls
+                      else self.providers[platform].resolve(room, cfg[platform]))
             if not safe_media(stream.url, platform):
                 raise ValueError('invalid media')
             # A 302 does not forward source request headers to the player.
@@ -417,10 +420,11 @@ class Handler(BaseHTTPRequestHandler):
                 except RuntimeError:
                     return self.reply(503, b'Channels updating; retry shortly', headers={'Retry-After': '5'})
                 return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
-            if len(parts) == 6 and parts[3] == 'live' and ROOM.fullmatch(parts[5]):
+            if len(parts) == 6 and parts[3] in ('live', 'hls') and ROOM.fullmatch(parts[5]):
                 self.app.engine.maybe_refresh()
                 try:
-                    stream = self.app.engine.resolve(parts[4], parts[5])
+                    # /hls/ serves players without FLV support (e.g. iOS AVPlayer).
+                    stream = self.app.engine.resolve(parts[4], parts[5], hls=parts[3] == 'hls')
                 except LookupError:
                     return self.reply(404)
                 except Exception:

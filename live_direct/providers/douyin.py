@@ -102,9 +102,10 @@ def parse_room_page(page, requested_id):
     raise ProviderError('Douyin room page format unavailable')
 
 
-def select_stream(streams, quality='HD1'):
+def select_stream(streams, quality='HD1', formats=('flv', 'hls')):
     tiers = tuple(dict.fromkeys((quality, *QUALITIES)))
-    for fmt, field in (('flv', 'flv_pull_url'), ('hls', 'hls_pull_url_map')):
+    fields = {'flv': 'flv_pull_url', 'hls': 'hls_pull_url_map'}
+    for fmt, field in ((f, fields[f]) for f in formats):
         mapping = streams.get(field) or {}
         if not isinstance(mapping, dict):
             continue
@@ -119,6 +120,9 @@ def select_stream(streams, quality='HD1'):
 
 
 class Douyin:
+    # resolve() accepts formats=('hls',) for players without FLV support.
+    hls = True
+
     def __init__(self, client=None):
         self.client = client or net
         self.warnings = []
@@ -277,6 +281,6 @@ class Douyin:
             raise ProviderError('Douyin discovery failed')
         return channels
 
-    def resolve(self, room_id, config):
+    def resolve(self, room_id, config, formats=('flv', 'hls')):
         row = self._lookup(normalize_room(room_id), config)
-        return select_stream(row['streams'], config.get('quality', 'HD1'))
+        return select_stream(row['streams'], config.get('quality', 'HD1'), formats)

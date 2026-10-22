@@ -139,7 +139,7 @@ def sign_url(line, uid, bitrate, fmt, now_ms):
     return net.media_url(url, 'huya', fmt)
 
 
-def select_stream(room, quality=0, start=0, now_ms=None):
+def select_stream(room, quality=0, start=0, now_ms=None, formats=('flv', 'hls')):
     """FLV on any line first, then HLS; `start` rotates which CDN line leads."""
     lines = [line for line in room['lines'] if isinstance(line, dict)]
     if not lines:
@@ -148,7 +148,7 @@ def select_stream(room, quality=0, start=0, now_ms=None):
     ordered = lines[start:] + lines[:start]
     bitrate = select_bitrate(room['bitrates'], quality)
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    for fmt in ('flv', 'hls'):
+    for fmt in formats:
         for line in ordered:
             try:
                 return Stream(sign_url(line, room['uid'], bitrate, fmt, now_ms), fmt,
@@ -159,6 +159,9 @@ def select_stream(room, quality=0, start=0, now_ms=None):
 
 
 class Huya:
+    # resolve() accepts formats=('hls',) for players without FLV support.
+    hls = True
+
     # Engine keeps a successful redirect this long. Requests a player fires while
     # starting one playback reuse it; a reconnect after that resolves again and
     # so can land on another line. This spreads retries over the advertised
@@ -199,6 +202,6 @@ class Huya:
         return common.discover('huya', 'Huya', self.warnings, manual, self._room, categories, category,
                                count, int(config.get('min_viewers', 0)))
 
-    def resolve(self, room_id, config):
+    def resolve(self, room_id, config, formats=('flv', 'hls')):
         room = self._room(normalize_room(room_id))
-        return select_stream(room, int(config.get('quality', 0)), self._line_start(room['id']))
+        return select_stream(room, int(config.get('quality', 0)), self._line_start(room['id']), formats=formats)

@@ -108,6 +108,25 @@ class ProvidersTest(unittest.TestCase):
                             'hls_pull_url_map': {'SD1': 'https://a.douyinliving.com/f.m3u8'}})
         self.assertEqual((stream.format, stream.quality), ('hls', 'SD1'))
 
+    def test_hls_only_selection(self):
+        both = {'flv_pull_url': {'HD1': 'https://a.douyinliving.com/f.flv'},
+                'hls_pull_url_map': {'HD1': 'https://a.douyinliving.com/f.m3u8'}}
+        self.assertEqual(dy_stream(both).format, 'flv')
+        self.assertEqual(dy_stream(both, formats=('hls',)).format, 'hls')
+        with self.assertRaises(ProviderError):
+            dy_stream({'flv_pull_url': both['flv_pull_url']}, formats=('hls',))
+        data = play_fixture()
+        data['playurl_info']['playurl']['stream'] += play_fixture(False)['playurl_info']['playurl']['stream']
+        self.assertEqual(select_stream(data).format, 'flv')
+        self.assertEqual(select_stream(data, formats=('hls',)).format, 'hls')
+        with self.assertRaises(ProviderError):
+            select_stream(play_fixture(), formats=('hls',))
+        page, _ = self.huya_page()
+        room = huya.parse_room_page(page, '880')
+        stream = huya.select_stream(room, formats=('hls',))
+        self.assertEqual(stream.format, 'hls')
+        self.assertTrue(stream.url.startswith('https://al.hls.huya.com/src/1-2-abc.m3u8?'))
+
     def test_bili_codec_preference_and_fallback(self):
         data = play_fixture(True, 'hevc')
         data['playurl_info']['playurl']['stream'] += play_fixture(False)['playurl_info']['playurl']['stream']

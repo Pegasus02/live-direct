@@ -37,7 +37,7 @@ def normalize_room(value):
     return str(int(text))
 
 
-def select_stream(data, prefer_avc=True):
+def select_stream(data, prefer_avc=True, formats=('flv', 'hls')):
     candidates = []
     try:
         streams = data['playurl_info']['playurl']['stream']
@@ -49,7 +49,7 @@ def select_stream(data, prefer_avc=True):
             name = fmt.get('format_name')
             kind = 'flv' if protocol == 'http_stream' and name == 'flv' else (
                 'hls' if protocol == 'http_hls' and name in ('ts', 'fmp4') else None)
-            if kind is None:
+            if kind not in formats:
                 continue
             for codec in fmt.get('codec') or []:
                 cname = codec.get('codec_name')
@@ -72,6 +72,9 @@ def select_stream(data, prefer_avc=True):
 
 
 class Bilibili:
+    # resolve() accepts formats=('hls',) for players without FLV support.
+    hls = True
+
     def __init__(self, client=None):
         self.client = client or net
         self.warnings = []
@@ -187,7 +190,7 @@ class Bilibili:
             raise ProviderError('Bilibili discovery failed')
         return channels
 
-    def resolve(self, room_id, config):
+    def resolve(self, room_id, config, formats=('flv', 'hls')):
         rid = normalize_room(room_id)
         wanted = int(config.get('quality', 10000))
         def play(qn):
@@ -201,7 +204,7 @@ class Bilibili:
                 raise RoomOfflineError('Bilibili room is offline')
             return data
         data = play(wanted or 10000)
-        stream = select_stream(data, config.get('prefer_avc', True))
+        stream = select_stream(data, config.get('prefer_avc', True), formats)
         if wanted == 0 and int(stream.quality or 0) >= 10000:
             # Highest means the highest advertised tier, but never retry a
             # silently downgraded anonymous request or trust arbitrary qn text.
@@ -213,7 +216,7 @@ class Bilibili:
                                         if isinstance(q, int) and 0 < q <= 30000)
             highest = max(accepted, default=0)
             if highest > int(stream.quality):
-                stream = select_stream(play(highest), config.get('prefer_avc', True))
+                stream = select_stream(play(highest), config.get('prefer_avc', True), formats)
         return stream
 
     def qrcode_generate(self):
