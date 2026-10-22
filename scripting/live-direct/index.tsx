@@ -1,4 +1,4 @@
-import { Navigation, NavigationStack, Script, Tab, TabView } from "scripting"
+import { AppEvents, Navigation, NavigationStack, type ScenePhase, Script, Tab, TabView } from "scripting"
 import { backend } from "./backend"
 import { ChannelsPage } from "./channels-page"
 import { OverviewPage } from "./overview-page"
@@ -26,7 +26,7 @@ function App() {
 let keepingAlive = false
 
 /** 服务运行中且开启保活时，切到后台申请继续运行，回到前台释放。 */
-function onScenePhase(phase: string) {
+function onScenePhase(phase: ScenePhase) {
   if (phase === "background" && backend.running && readSettings().keepAlive && !keepingAlive) {
     keepingAlive = true
     void BackgroundKeeper.keepAlive().then(ok => { keepingAlive = ok })

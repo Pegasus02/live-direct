@@ -1,4 +1,4 @@
-import { AVPlayerView, Button, HStack, Navigation, NavigationStack, ProgressView, Spacer, Text, useEffect, useMemo, useObservable, useState, VStack } from "scripting"
+import { AVPlayerView, Button, HStack, Navigation, NavigationStack, type PIPStatus, ProgressView, Spacer, Text, useEffect, useMemo, useObservable, useState, VStack } from "scripting"
 import { backend } from "./backend"
 import { type Channel, LABELS } from "./core/common"
 import { LookupError } from "./core/engine"

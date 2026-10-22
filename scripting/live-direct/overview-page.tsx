@@ -1,13 +1,13 @@
-import { Button, HStack, Image, List, NavigationLink, ProgressView, Section, Spacer, Text, Toggle, VStack } from "scripting"
+import { Button, type Color, HStack, Image, List, NavigationLink, ProgressView, Section, Spacer, Text, Toggle, VStack } from "scripting"
 import { backend, useBackend } from "./backend"
 import { LABELS, PLATFORMS, type Platform } from "./core/common"
 import { describeError, translate } from "./messages"
 import { PlatformPage } from "./platform-page"
 import { readSettings } from "./store"
 
-export const PLATFORM_COLORS: Record<Platform, string> = { douyin: "systemPink", bilibili: "systemBlue", douyu: "systemOrange", huya: "systemYellow" }
+export const PLATFORM_COLORS: Record<Platform, Color> = { douyin: "systemPink", bilibili: "systemBlue", douyu: "systemOrange", huya: "systemYellow" }
 
-const STATUS: Record<string, [string, string]> = {
+const STATUS: Record<string, [string, Color]> = {
   ok: ["正常", "systemGreen"], error: ["刷新失败", "systemRed"], disabled: ["未启用", "secondaryLabel"],
 }
 
@@ -71,7 +71,7 @@ export function OverviewPage({ onExit }: { onExit: () => void }) {
       {PLATFORMS.map(platform => {
         const health = status.platforms[platform]
         const enabled = b.config[platform].enabled
-        const [label, color] = STATUS[health?.status ?? (enabled ? "" : "disabled")] ?? ["等待刷新", "secondaryLabel"]
+        const [label, color] = STATUS[health?.status ?? (enabled ? "" : "disabled")] ?? ["等待刷新", "secondaryLabel"] as [string, Color]
         return <NavigationLink key={platform} destination={<PlatformPage platform={platform} />}>
           <VStack alignment="leading" spacing={4}>
             <HStack>

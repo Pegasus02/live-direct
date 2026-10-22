@@ -43,7 +43,9 @@ export class ConfigError extends Error {
   }
 }
 
-export const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+export function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value))
+}
 
 function integer(value: unknown, low: number, high: number, field: string) {
   if (typeof value !== "number" || !Number.isInteger(value) || value < low || value > high) {

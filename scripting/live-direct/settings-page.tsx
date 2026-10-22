@@ -42,12 +42,12 @@ export function SettingsPage() {
       "内置播放器使用系统 AVPlayer，只能播放 HLS：抖音、B站、虎牙会单独取 HLS 流，斗鱼只有 FLV，只能用外部播放器。\n"
       + "APTV 没有公开的“播放指定地址”链接：选 APTV 时会复制播放地址并打开 APTV，在已添加的本机订阅里点同名频道即可。"
     }</Text>}>
-      <Picker title="点击频道时" value={settings.playMode} onChanged={(value: PlayMode) => update({ playMode: value })} pickerStyle="menu">
+      <Picker title="点击频道时" value={settings.playMode} onChanged={(value: string) => update({ playMode: value as PlayMode })} pickerStyle="menu">
         <Text tag="ask">每次询问</Text>
         <Text tag="external">外部播放器</Text>
         <Text tag="inapp">内置播放器</Text>
       </Picker>
-      <Picker title="外部播放器" value={settings.externalPlayer} onChanged={(value: ExternalPlayer) => update({ externalPlayer: value })} pickerStyle="menu">
+      <Picker title="外部播放器" value={settings.externalPlayer} onChanged={(value: string) => update({ externalPlayer: value as ExternalPlayer })} pickerStyle="menu">
         {(Object.keys(EXTERNAL_PLAYERS) as ExternalPlayer[]).map(key => <Text key={key} tag={key}>{EXTERNAL_PLAYERS[key].label}</Text>)}
       </Picker>
       {settings.externalPlayer === "custom"

@@ -196,7 +196,7 @@ function QrLoginPage() {
         setImage(await QRCode.generate(qr.url))
         setMessage("请用另一台设备上的 B站 App 扫码，或点下方按钮在本机 B站 App 中打开确认。")
         for (let i = 0; i < 90 && !stopped; i++) {
-          await new Promise(resolve => setTimeout(resolve, 2000))
+          await new Promise<void>(resolve => setTimeout(() => resolve(), 2000))
           if (stopped) return
           const poll = await backend.bilibili.qrcodePoll(qr.qrcode_key)
           if (poll.status === "success" && poll.sessdata) {

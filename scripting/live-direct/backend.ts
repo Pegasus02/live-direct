@@ -120,7 +120,7 @@ class Backend {
     server.setNotFoundHandler(async () => text(404, "Not Found"))
     if (!settings.allowLan) {
       // 只监听回环地址，局域网其他设备无法访问。
-      try { (server as any).listenAddressIPv4 = "127.0.0.1" } catch {}
+      server.listenAddressIPv4 = "127.0.0.1"
     }
     const error = server.start({ port: settings.port, forceIPv4: !settings.allowLan })
     this.serverError = error ?? ""
