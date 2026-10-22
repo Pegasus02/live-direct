@@ -16,6 +16,14 @@ NAS investigation (2026-10-23): repaired bounded Huya-only unsolicited gzip deco
 
 Development container: cannot reach douyu.com or huya.com. Endpoints and signing follow the referenced upstream implementations (akiralereal/iptv, public recorder projects) as of October 2026. Real-room checks above were done by the owner on site; long playback and other players remain unverified.
 
+## Owner APTV CDN comparison and production correction (2026-10-23)
+
+The owner tested the diagnostic playlist in APTV and explicitly reported: baseline bad; hw and hs both good. This is target-player evidence for that same-room CDN comparison, not blanket acceptance of every room or long duration. Production now prefers advertised hw-h5 then hs-h5, verifies the selected CDN acknowledgement, and falls back to the original default only if preferred lines are absent or fail. Quality/config/subscription remain unchanged. Five new preference regressions bring the suite to103 passing tests. Fresh production-subscription acceptance after this change is still to be confirmed by the owner.
+
+A separate pre-change default-line ffmpeg capture requested370 seconds but ended normally after about300 wall seconds with307 changing one-second samples, exit0. This suggests a bounded source connection in that sample, but does not prove why APTV repeats or establish an exact expiry contract; no expire-query workaround was deployed.
+
+The diagnostic entry named baseline follows the normal production resolver. After the preference update it therefore exercises the new preferred production route, not a frozen copy of the old failing CDN.
+
 ## Opt-in Douyu comparison (2026-10-23)
 
 98 offline Python tests cover the existing functionality and the token-scoped diagnostic playlist: current-channel/enabled checks, two fixed advertised CDN names, acknowledgement matching, shared concurrency limits, in-flight revocation, media validation, and unchanged production playlist/configuration. The deployed diagnostic playlist produced exactly three local routes. Wrong token, unsupported CDN, and unknown channel returned404 in live checks. Default/hw-h5/hs-h5 each followed302 and decoded30/30 distinct one-second samples. A separate run let ffmpeg follow the actual application302 directly: all three Douyu routes and Huya HLS decoded20/20 changing samples. Post-deployment Bilibili7734200 and Douyin147514260800 each decoded10 seconds successfully. These bounded checks still do not reproduce or validate APTV's behavior.
