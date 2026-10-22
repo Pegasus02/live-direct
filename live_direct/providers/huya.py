@@ -139,7 +139,7 @@ def sign_url(line, uid, bitrate, fmt, now_ms):
     return net.media_url(url, 'huya', fmt)
 
 
-def select_stream(room, quality=0, start=0, now_ms=None):
+def select_stream(room, quality=0, start=0, now_ms=None, prefer_hls=False):
     """FLV on any line first, then HLS; `start` rotates which CDN line leads."""
     lines = [line for line in room['lines'] if isinstance(line, dict)]
     if not lines:
@@ -148,7 +148,7 @@ def select_stream(room, quality=0, start=0, now_ms=None):
     ordered = lines[start:] + lines[:start]
     bitrate = select_bitrate(room['bitrates'], quality)
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    for fmt in ('flv', 'hls'):
+    for fmt in (('hls', 'flv') if prefer_hls else ('flv', 'hls')):
         for line in ordered:
             try:
                 return Stream(sign_url(line, room['uid'], bitrate, fmt, now_ms), fmt,
@@ -201,4 +201,7 @@ class Huya:
 
     def resolve(self, room_id, config):
         room = self._room(normalize_room(room_id))
-        return select_stream(room, int(config.get('quality', 0)), self._line_start(room['id']))
+        # Real CDN probes: these web FLV lines can serve a prefix but reject
+        # player connections, while advertised HLS segments decode successfully.
+        # Prefer HLS for redirect clients; retain trusted FLV as metadata fallback.
+        return select_stream(room, int(config.get('quality', 0)), self._line_start(room['id']), prefer_hls=True)

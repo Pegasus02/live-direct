@@ -5,6 +5,7 @@ import re
 import socket
 import ssl
 import time
+import zlib
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 
 from .models import ProviderError
@@ -81,8 +82,14 @@ def _fetch(url, headers=None, return_headers=False, form=None):
         resp_headers = response.getheaders() if hasattr(response, 'getheaders') else []
         if response.status != 200:
             raise ProviderError('Upstream HTTP request failed')
-        if response.getheader('Content-Encoding', 'identity').lower() != 'identity':
+        encoding = response.getheader('Content-Encoding', 'identity').lower()
+        # Huya sometimes sends gzip despite requesting identity. Keep other
+        # providers unchanged and bound both compressed and decoded bytes.
+        compressed = encoding == 'gzip' and p.hostname == 'www.huya.com'
+        if encoding != 'identity' and not compressed:
             raise ProviderError('Unsupported upstream encoding')
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if compressed else None
+        decoded_size = 0
         length = response.getheader('Content-Length')
         if length and int(length) > MAX_BYTES:
             raise ProviderError('Upstream response too large')
@@ -95,12 +102,24 @@ def _fetch(url, headers=None, return_headers=False, form=None):
                 transport.settimeout(remaining)
             chunk = response.read1(min(65536, MAX_BYTES + 1 - size))
             if not chunk:
+                if decoder is not None and (not decoder.eof or decoder.unused_data):
+                    raise ProviderError('Invalid upstream compression')
                 text = b''.join(chunks).decode('utf-8')
                 return (resp_headers, text) if return_headers else text
-            chunks.append(chunk)
             size += len(chunk)
             if size > MAX_BYTES:
                 raise ProviderError('Upstream response too large')
+            if decoder is not None:
+                try:
+                    chunk = decoder.decompress(chunk, MAX_BYTES + 1 - decoded_size)
+                except zlib.error:
+                    raise ProviderError('Invalid upstream compression') from None
+                decoded_size += len(chunk)
+                if decoded_size > MAX_BYTES or decoder.unconsumed_tail:
+                    raise ProviderError('Upstream response too large')
+                if decoder.unused_data:
+                    raise ProviderError('Invalid upstream compression')
+            chunks.append(chunk)
     except ProviderError:
         raise
     except (OSError, socket.timeout, ValueError, UnicodeError, http.client.HTTPException):

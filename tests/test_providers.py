@@ -237,7 +237,7 @@ class ProvidersTest(unittest.TestCase):
 
     def test_huya_room_page_signed_flv_and_rotation(self):
         page, line = self.huya_page()
-        second = dict(line, sCdnType='TX', sFlvUrl='https://tx.flv.huya.com/src')
+        second = dict(line, sCdnType='TX', sFlvUrl='https://tx.flv.huya.com/src', sHlsUrl='https://tx.hls.huya.com/src')
         page, _ = self.huya_page([line, second])
         room = huya.parse_room_page(page, 'vanity')
         self.assertEqual((room['id'], room['title'], room['uid']), ('880', 'A "}" title', '1234'))
@@ -252,7 +252,10 @@ class ProvidersTest(unittest.TestCase):
         self.assertIn('&ratio=4000&', huya.select_stream(room, 4000).url)
         provider = huya.Huya(Fake({'/vanity': page}))
         hosts = [provider.resolve('vanity', {}).url.split('/')[2] for _ in range(3)]
-        self.assertEqual(hosts, ['al.flv.huya.com', 'tx.flv.huya.com', 'al.flv.huya.com'])
+        self.assertEqual(hosts, ['al.hls.huya.com', 'tx.hls.huya.com', 'al.hls.huya.com'])
+        self.assertEqual(provider.resolve('vanity', {}).format, 'hls')
+        flv_only, _ = self.huya_page([dict(line, sHlsUrl='https://evil.test/src')])
+        self.assertEqual(huya.Huya(Fake({'/vanity': flv_only})).resolve('vanity', {}).format, 'flv')
 
     def test_huya_hls_fallback_offline_and_blocked(self):
         _, line = self.huya_page()
