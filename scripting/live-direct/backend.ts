@@ -11,6 +11,13 @@ import { scriptingTransport } from "./transport"
 
 export const client = createClient(scriptingTransport)
 
+/** HttpRequest.address 形如 "127.0.0.1:51684" 或 "::1:51717"（IPv6 不带方括号）。 */
+export function isLoopback(address: string | null): boolean {
+  if (!address) return false
+  const host = address.slice(0, address.lastIndexOf(":"))
+  return /^127\./.test(host) || host === "::1" || /^::ffff:127\./i.test(host)
+}
+
 class Backend {
   config: Config = loadConfig()
   token = subscriptionToken()
@@ -84,6 +91,8 @@ class Backend {
     })
     // 令牌比对放在中间件里：路径不对一律 404，不暴露是否存在。
     server.registerMiddleware(async req => {
+      // Scripting 3.3.0 实测忽略 listenAddressIPv4，局域网设备照样能连上，只能按来源地址拒绝。
+      if (!settings.allowLan && !isLoopback(req.address)) return text(403, "Forbidden")
       const parts = req.path.split("/")
       if (parts[1] !== "s" || parts[2] !== this.token) return text(404, "Not Found")
       if (req.method !== "GET" && req.method !== "HEAD") return text(405, "Method Not Allowed")
@@ -118,10 +127,8 @@ class Backend {
       })
     }
     server.setNotFoundHandler(async () => text(404, "Not Found"))
-    if (!settings.allowLan) {
-      // 只监听回环地址，局域网其他设备无法访问。
-      server.listenAddressIPv4 = "127.0.0.1"
-    }
+    // 请求只监听回环地址；目前不生效（见上面的中间件），留着以便 App 将来支持。
+    if (!settings.allowLan) server.listenAddressIPv4 = "127.0.0.1"
     const error = server.start({ port: settings.port, forceIPv4: !settings.allowLan })
     this.serverError = error ?? ""
     this.server = error ? null : server

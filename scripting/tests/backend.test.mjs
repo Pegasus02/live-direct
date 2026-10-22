@@ -42,8 +42,8 @@ globalThis.HttpServer = class {
   setNotFoundHandler(fn) { this.notFound = fn }
   start(options) { this.options = options; this.port = options.port; this.state = "running"; return null }
   stop() { this.state = "stopped" }
-  async request(method, p) {
-    const req = { method, path: p, params: {} }
+  async request(method, p, address = "127.0.0.1:50000") {
+    const req = { method, path: p, params: {}, address }
     for (const m of this.middleware) { const r = await m(req); if (r) return r }
     for (const [pattern, fn] of this.routes) {
       const a = pattern.split("/"), b = p.split("/")
@@ -114,6 +114,10 @@ assert.equal((await server.request("GET", base + "/live/huya/999")).statusCode, 
 assert.equal((await server.request("GET", "/s/wrong-token/live/huya/880")).statusCode, 404, "token gate")
 assert.equal((await server.request("POST", base + "/live/huya/880")).statusCode, 405)
 assert.equal((await server.request("GET", "/admin")).statusCode, 404)
+// listenAddressIPv4 is ignored by the app, so LAN peers are refused by address.
+assert.equal((await server.request("GET", base + "/interface.m3u", "::1:50001")).statusCode, 200)
+assert.equal((await server.request("GET", base + "/interface.m3u", "192.168.1.30:50002")).statusCode, 403)
+assert.equal((await server.request("GET", base + "/interface.m3u", null)).statusCode, 403)
 assert.ok(requested.every(([, url]) => url.startsWith("https://www.huya.com/") || url.startsWith("https://www.douyu.com/") || url.startsWith("https://playweb.douyucdn.cn/")))
 
 // Disabling a platform revokes its channels immediately.
@@ -135,6 +139,7 @@ Storage.set("live-direct.settings", { allowLan: true })
 backend.startServer()
 assert.deepEqual(servers.at(-1).options, { port: 19070, forceIPv4: false })
 assert.equal(backend.subscriptionUrl(backend.lanAddress()).startsWith("http://192.168.1.20:19070/s/"), true)
+assert.notEqual((await servers.at(-1).request("GET", `/s/${backend.token}/interface.m3u`, "192.168.1.30:50003")).statusCode, 403, "LAN peers allowed")
 const old = backend.token
 backend.resetToken()
 assert.notEqual(backend.token, old)
