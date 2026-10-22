@@ -16,6 +16,10 @@ NAS investigation (2026-10-23): repaired bounded Huya-only unsolicited gzip deco
 
 Development container: cannot reach douyu.com or huya.com. Endpoints and signing follow the referenced upstream implementations (akiralereal/iptv, public recorder projects) as of October 2026. Real-room checks above were done by the owner on site; long playback and other players remain unverified.
 
+## Opt-in Douyu comparison (2026-10-23)
+
+98 offline Python tests cover the existing functionality and the token-scoped diagnostic playlist: current-channel/enabled checks, two fixed advertised CDN names, acknowledgement matching, shared concurrency limits, in-flight revocation, media validation, and unchanged production playlist/configuration. The deployed diagnostic playlist produced exactly three local routes. Wrong token, unsupported CDN, and unknown channel returned404 in live checks. Default/hw-h5/hs-h5 each followed302 and decoded30/30 distinct one-second samples. A separate run let ffmpeg follow the actual application302 directly: all three Douyu routes and Huya HLS decoded20/20 changing samples. Post-deployment Bilibili7734200 and Douyin147514260800 each decoded10 seconds successfully. These bounded checks still do not reproduce or validate APTV's behavior.
+
 ## Live anonymous provider checks
 
 Run on the target NAS using independently staged Python modules (not a new persistent service):

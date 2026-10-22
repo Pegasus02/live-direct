@@ -189,13 +189,28 @@ class Douyu:
     def resolve(self, room_id, config):
         rid = self._room(normalize_room(room_id))['id']
         data = self._play(rid, int(config.get('quality', 0)))
+        # APTV same-room comparison confirmed hw-h5/hs-h5 work while the
+        # default line repeats frames. Prefer only actually advertised lines;
+        # verify acknowledgement so a silent fallback is not called a success.
+        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
+        current = data.get('rtmp_cdn') if isinstance(data, dict) else None
+        advertised = {line.get('cdn') for line in (lines if isinstance(lines, list) else [])
+                      if isinstance(line, dict) and isinstance(line.get('cdn'), str)}
+        for preferred in ('hw-h5', 'hs-h5'):
+            if preferred not in advertised:
+                continue
+            try:
+                candidate = data if current == preferred else self._play(rid, int(config.get('quality', 0)), preferred)
+                if not isinstance(candidate, dict) or candidate.get('rtmp_cdn') != preferred:
+                    continue
+                return stream_from(candidate)
+            except ProviderError:
+                continue
         try:
             return stream_from(data)
         except ProviderError:
             pass
-        # The default line was not a trusted HTTPS CDN; ask for the other advertised lines.
-        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
-        current = data.get('rtmp_cdn') if isinstance(data, dict) else None
+        # The default URL is untrusted; retain bounded fallback for other lines.
         for line in (lines if isinstance(lines, list) else [])[:4]:
             cdn = line.get('cdn') if isinstance(line, dict) else None
             if not isinstance(cdn, str) or cdn == current or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', cdn):
