@@ -178,8 +178,14 @@ class ConfigStore:
     and atomic replace. No credentials are interpolated into exception messages.
     Caller should use a single store per configuration file (no multiprocess CAS).
     """
-    def __init__(self, path):
+    def __init__(self, path, root=None):
         self.path = Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+        # Sandboxed hosts (iOS apps) cannot open ancestors outside their own
+        # container, so an embedding may anchor the no-symlink walk at a
+        # directory it created itself instead of at "/".
+        self.root = Path(os.path.abspath(os.fspath(root))) if root is not None else None
+        if self.root is not None and self.root != self.path.parent and self.root not in self.path.parents:
+            raise ConfigError("config: path outside root")
         self._lock = threading.RLock()
         with self._lock:
             directory = self._directory(create=False)
@@ -190,9 +196,16 @@ class ConfigStore:
                     os.close(directory)
 
     def _directory(self, create):
-        fd = os.open(self.path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        if self.root is None:
+            start, parts = self.path.anchor, self.path.parent.parts[1:]
+        else:
+            start, parts = self.root, self.path.parent.relative_to(self.root).parts
         try:
-            for part in self.path.parent.parts[1:]:
+            fd = os.open(start, os.O_RDONLY | os.O_DIRECTORY)
+        except OSError:
+            raise ConfigError("config: unsafe or inaccessible directory") from None
+        try:
+            for part in parts:
                 try:
                     child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                 except FileNotFoundError:

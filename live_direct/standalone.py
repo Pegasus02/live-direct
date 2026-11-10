@@ -20,9 +20,14 @@ DEFAULT_PORT = 1907
 SECRETS_FILE = 'standalone-secrets.json'
 
 
+# The single-file build sets this to its own path; hosts such as APTV exec the
+# script from their runner, so __main__ may not be the script itself.
+SCRIPT_PATH = ''
+
+
 def default_data_dir():
     main = sys.modules.get('__main__')
-    script = getattr(main, '__file__', None) or (sys.argv[0] if sys.argv and sys.argv[0] else '')
+    script = SCRIPT_PATH or getattr(main, '__file__', None) or (sys.argv[0] if sys.argv and sys.argv[0] else '')
     base = Path(script).resolve().parent if script else Path.cwd()
     return base / 'live-direct-data'
 
@@ -55,13 +60,19 @@ def is_loopback(host):
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(description='Live Direct 单文件版（抖音/B站/斗鱼/虎牙直播 M3U，302 直连）')
-    ap.add_argument('port', nargs='?', type=int, default=int(os.environ.get('PORT', DEFAULT_PORT)), help=f'监听端口 (默认 {DEFAULT_PORT})')
+    ap.add_argument('port', nargs='*', help=f'监听端口 (默认 {DEFAULT_PORT})')
     ap.add_argument('--bind', default=os.environ.get('BIND_IP', '127.0.0.1'), help='监听地址 (默认 127.0.0.1，仅本机)')
     ap.add_argument('--public-base', default=os.environ.get('PUBLIC_BASE', ''), help='播放器访问本服务的地址 (默认 http://127.0.0.1:端口)')
     ap.add_argument('--data-dir', default=os.environ.get('DATA_DIR', ''), help='配置目录 (默认脚本旁的 live-direct-data)')
     ap.add_argument('--admin-login', action='store_true', help='本机监听时也要求管理员令牌登录')
-    # Hosts may pass their own arguments; ignore what we do not know.
-    args, _ = ap.parse_known_args(argv)
+    # Hosts may pass their own arguments (e.g. the script path); ignore what
+    # we do not know instead of exiting.
+    try:
+        args, _ = ap.parse_known_args(argv)
+    except SystemExit:
+        args, _ = ap.parse_known_args([])
+    ports = [int(x) for x in args.port if x.isdigit() and int(x) < 65536]
+    args.port = ports[0] if ports else int(os.environ.get('PORT', DEFAULT_PORT))
     return args
 
 
@@ -75,7 +86,7 @@ def build(argv=None):
     auth = args.admin_login or not local
     host = '127.0.0.1' if local else args.bind
     base = (args.public_base or f'http://{host}:{args.port}').rstrip('/')
-    app = Application(ConfigStore(data / 'config.json'), admin, sub, base, auth_enabled=auth)
+    app = Application(ConfigStore(data / 'config.json', root=data), admin, sub, base, auth_enabled=auth)
     srv = Server((args.bind, args.port), app)
     port = srv.server_address[1]
     if not args.public_base and args.port == 0:

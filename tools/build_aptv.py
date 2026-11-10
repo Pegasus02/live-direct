@@ -60,6 +60,7 @@ _app.ASSETS.update({{k: _b64.b64decode(v) for k, v in _ASSETS.items()}})
 
 if __name__ == '__main__':
     import live_direct.standalone as _standalone
+    _standalone.SCRIPT_PATH = globals().get('__file__') or ''
     _standalone.main()
 '''
 
