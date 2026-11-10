@@ -63,6 +63,21 @@ python3 -m live_direct.app
 
 服务端订阅路径另提供 `/s/订阅令牌/hls/平台/房间`：与 `/live/` 相同的校验和缓存，只接受 HLS 流并 302 跳转，供不支持 FLV 的播放器（如 iOS 系统播放器）使用。抖音、B站、虎牙支持；斗鱼只有 FLV，该路径返回404。M3U 订阅内容不变。
 
+## 单文件版（APTV 等只能运行一个脚本的环境）
+
+```sh
+python3 tools/build_aptv.py   # 生成 dist/live-direct-aptv.py
+```
+
+产物是一个只依赖 Python 标准库的 `.py` 文件，内含全部模块和后台页面，运行时在内存中加载，不解压到磁盘。把它交给 APTV 测试版等宿主运行即可，无需任何环境变量：
+
+- 默认监听 `127.0.0.1:1907`，只有本机能访问；可传参数 `[端口] --bind 地址 --public-base 地址 --data-dir 目录`。
+- 首次启动在脚本旁生成 `live-direct-data/`，内含 `config.json` 与 `standalone-secrets.json`（订阅令牌、管理员令牌，权限 0600），重启后订阅地址不变。
+- 仅本机监听时后台免登录（同 `ADMIN_AUTH_ENABLED=false`，写操作仍需 CSRF 令牌）；`--bind` 设为非回环地址时自动要求管理员登录，令牌在 `standalone-secrets.json`。也可用 `--admin-login` 强制登录。
+- 启动日志打印后台和订阅地址；APTV 中订阅 `http://127.0.0.1:1907/s/令牌/interface.m3u`。后台要用与日志相同的地址打开（`127.0.0.1` 与 `localhost` 不能混用，否则保存会被同源检查拒绝）。
+
+不要修改生成的文件，改 `live_direct/` 后重新构建。APTV 内置 Python 的版本、后台存活时间等宿主限制尚未在真机上验证。
+
 ## 可选免登录后台
 
 默认 `ADMIN_AUTH_ENABLED=true`，缺省也保持登录保护。仅在完全可信内网/VPN且用户明确接受风险时，可在.env设置 `ADMIN_AUTH_ENABLED=false` 后重建容器。此时 `/admin` 和管理API不再要求密码或Cookie，`/login` 跳转后台；ADMIN_TOKEN可不配置。所有能连到端口的人都可修改配置并获取订阅URL。严禁直接开放公网；订阅令牌仍有效，但同一网络用户可以从开放后台获取它。写请求仍需同源CSRF令牌，CORS不放开。重新设true并配置有效ADMIN_TOKEN即可恢复登录。此选项不保证解决浏览器白屏，白屏根因仍应单独排查。

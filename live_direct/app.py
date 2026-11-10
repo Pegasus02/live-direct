@@ -20,6 +20,16 @@ from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
+# Filled by the single-file build (tools/build_aptv.py); empty means read web/.
+ASSETS = {}
+WEB_DIR = Path(__file__).parent / 'web'
+
+
+def read_asset(name):
+    data = ASSETS.get(name)
+    return data if data is not None else (WEB_DIR / name).read_bytes()
+
+
 LOGO_SUFFIXES = ('.hdslb.com', '.douyinpic.com', '.douyincdn.com', '.byteimg.com', '.douyucdn.cn', '.msstatic.com')
 
 
@@ -247,7 +257,6 @@ class Application:
         self.sessions = {}
         self.session_lock = threading.Lock()
         self.login_attempts = {}
-        self.web = Path(__file__).parent / 'web'
 
     def login(self, token, client):
         now = time.monotonic()
@@ -350,7 +359,7 @@ class Handler(BaseHTTPRequestHandler):
             name = 'index.html' if path in admin_pages else assets[path]
             typ = {'html': 'text/html; charset=utf-8', 'css': 'text/css', 'js': 'application/javascript',
                    'svg': 'image/svg+xml', 'png': 'image/png'}[name.rsplit('.', 1)[1]]
-            return self.reply(200, (self.app.web / name).read_bytes(), typ)
+            return self.reply(200, read_asset(name), typ)
         if path.startswith('/api/'):
             if not session:
                 return self.reply(401)
