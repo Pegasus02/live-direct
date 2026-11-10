@@ -46,6 +46,17 @@ class AppTests(unittest.TestCase):
         self.assertNotIn('evil.example', out)
         for bad in ['https://i0.hdslb.com/a".jpg', 'javascript:alert(1)', 'https://x.hdslb.com.evil.test/a', '']:
             self.assertEqual(safe_logo(bad), '')
+    def test_refresh_log_explains_empty_platform(self):
+        lines = []
+        self.engine.log = lines.append
+        self.engine.refresh()
+        self.assertEqual(lines, ['[刷新] 抖音: 1 个频道'])
+        self.provider.discover = lambda config: []
+        self.store.update({'douyin': {'rooms': []}})
+        lines.clear()
+        self.engine.refresh()
+        self.assertEqual(len(lines), 1)
+        self.assertIn('还没添加主播或分类', lines[0])
     def test_platforms_refresh_concurrently(self):
         import threading
         barrier = threading.Barrier(2, timeout=2)

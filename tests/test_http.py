@@ -24,6 +24,16 @@ class HTTPTests(unittest.TestCase):
         c.request(method, path, body, headers or {})
         r = c.getresponse(); out = (r.status, dict(r.getheaders()), r.read()); c.close()
         return out
+    def test_client_disconnect_is_not_logged_as_error(self):
+        from unittest import mock
+        from live_direct import app as app_module
+        lines = []
+        self.server.app.engine.log = lines.append
+        for error in (BrokenPipeError, ConnectionResetError, KeyError):
+            with mock.patch.object(app_module.Handler, 'serve', side_effect=error):
+                with self.assertRaises((http.client.RemoteDisconnected, ConnectionError)):
+                    self.req('GET', '/health')
+        self.assertEqual(lines, ['[请求] 处理出错 (KeyError)'])
     def test_auth_session_csrf_and_assets(self):
         self.assertEqual(self.req('GET', '/api/config')[0], 401)
         self.assertEqual(self.req('GET', '/login')[0], 200)

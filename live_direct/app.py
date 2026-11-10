@@ -72,6 +72,20 @@ def clean_text(value):
     return ''.join(c for c in str(value) if ord(c) >= 32 and ord(c) != 127).replace('"', "'")[:300]
 
 
+SOURCE_KEYS = ('rooms', 'share_links', 'categories', 'areas')
+
+
+def has_sources(config):
+    """Whether a platform config names anything to list at all."""
+    return any(config.get(key) for key in SOURCE_KEYS)
+
+
+def describe_config(config):
+    rooms = len(config.get('rooms') or []) + len(config.get('share_links') or [])
+    groups = len(config.get('categories') or config.get('areas') or [])
+    return ('已启用' if config.get('enabled') else '已关闭') + f'，{rooms} 个主播，{groups} 个分类'
+
+
 class Engine:
     def __init__(self, store, providers=None):
         self.store = store
@@ -129,7 +143,8 @@ class Engine:
                             selected[(platform, str(ch.room_id))] = ch
                     updated.update(selected)
                     health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(dict.fromkeys(getattr(provider, 'warnings', [])))[:20]}
-                    self.log(f'[刷新] {LABELS.get(platform, platform)}: {len(selected)} 个频道')
+                    hint = '' if selected or has_sources(cfg[platform]) else '（还没添加主播或分类，去管理后台添加）'
+                    self.log(f'[刷新] {LABELS.get(platform, platform)}: {len(selected)} 个频道{hint}')
                     for warning in health[platform]['warnings']:
                         self.log(f'[刷新] {LABELS.get(platform, platform)} 提示: {clean_text(warning)}')
                 except Exception as error:
@@ -489,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
                     with self.app.engine.lock:
                         result = self.app.store.update(patch)
                         self.app.engine.invalidate()
+                    for platform in (p for p in result if isinstance(patch, dict) and p in patch):
+                        self.app.engine.log(f'[配置] 已保存 {LABELS.get(platform, platform)}: {describe_config(result[platform])}')
                     self.app.engine.start_refresh()
                     return self.json_reply(200, result)
                 if path == '/api/refresh':
@@ -564,6 +581,9 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(error, ConfigError):
                 self.app.engine.log(f'[配置] 保存被拒绝: {clean_text(error)[:120]}')
             self.reply(400)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # The player hung up first (normal when it switches or probes).
+            self.close_connection = True
         except Exception as error:
             self.app.engine.log(f'[请求] 处理出错 ({type(error).__name__})')
             self.close_connection = True

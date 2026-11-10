@@ -46,8 +46,10 @@ class BundleTests(unittest.TestCase):
             proc.stdout.close()
         self.tmp.cleanup()
 
-    def start(self, *args):
-        env = {k: v for k, v in os.environ.items() if k not in ('PORT', 'BIND_IP', 'PUBLIC_BASE', 'DATA_DIR', 'PYTHONPATH')}
+    def start(self, *args, extra_env=None):
+        env = {k: v for k, v in os.environ.items() if k not in ('PORT', 'BIND_IP', 'PUBLIC_BASE', 'DATA_DIR', 'PYTHONPATH')
+               and not k.startswith(('DOUYIN_', 'BILIBILI_', 'DOUYU_', 'HUYA_'))}
+        env.update(extra_env or {})
         # -I: no repo on sys.path, so every import must come from the bundle.
         proc = subprocess.Popen([sys.executable, '-I', '-B', str(self.script), '0', *args], cwd=self.dir,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
@@ -64,6 +66,17 @@ class BundleTests(unittest.TestCase):
         port = re.search(r'监听 [^:]+:(\d+)', out)
         self.assertIsNotNone(port, out)
         return 'http://127.0.0.1:' + port.group(1), out
+
+    def read_until(self, proc, text):
+        lines = []
+        while len(lines) < 40:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            lines.append(line)
+            if text in line:
+                break
+        return ''.join(lines)
 
     def test_local_mode_needs_no_token(self):
         base, out = self.start()
@@ -83,6 +96,7 @@ class BundleTests(unittest.TestCase):
         status, _ = call(base + '/api/config', json.dumps({'douyin': {'count': 3}}).encode(),
                          {'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'Origin': base})
         self.assertEqual(status, 200)
+        self.assertIn('[配置] 已保存 抖音: 已关闭，0 个主播，0 个分类', self.read_until(self.procs[-1], '已保存'))
         data = self.dir / 'live-direct-data'
         self.assertEqual(json.loads((data / 'config.json').read_text())['douyin']['count'], 3)
         self.assertFalse((data / 'standalone-secrets.json').exists())
@@ -109,6 +123,24 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(call(base + '/admin', headers={'Host': host})[0], 403, host)
             self.assertEqual(call(base + '/interface.m3u', headers={'Host': host})[0], 403, host)
         self.assertEqual(call(base + '/api/config', body, dict(post, Origin='http://evil.example'))[0], 403)
+
+    def test_environment_is_the_configuration(self):
+        base, out = self.start(extra_env={'DOUYU_ROOMS': '9999, 288016', 'HUYA_CATEGORIES': '网游', 'HUYA_COUNT': '5'})
+        self.assertIn('配置来源: 环境变量', out)
+        self.assertIn('[配置] 环境变量 斗鱼: 已启用，2 个主播，0 个分类', out)
+        self.assertIn('[配置] 环境变量 抖音: 已关闭', out)
+        self.assertIn('已启用平台: 斗鱼、虎牙', out)
+        saved = json.loads((self.dir / 'live-direct-data' / 'config.json').read_text())
+        self.assertEqual(saved['huya']['categories'], ['100023'])
+        self.assertEqual(saved['huya']['count'], 5)
+
+    def test_bad_environment_value_stops_with_its_name(self):
+        env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+        env['DOUYU_COUNT'] = 'many'
+        proc = subprocess.run([sys.executable, '-I', '-B', str(self.script), '0'], cwd=self.dir, env=env,
+                              capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn('DOUYU_COUNT: 格式不对', proc.stdout + proc.stderr)
 
     def test_corrupt_config_is_set_aside(self):
         data = self.dir / 'live-direct-data'

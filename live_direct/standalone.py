@@ -20,8 +20,11 @@ import tempfile
 import threading
 import time
 
-from .app import Application, Server
-from .config import ConfigError, ConfigStore
+import re
+
+from .app import Application, Server, describe_config
+from .config import DEFAULTS, ConfigError, ConfigStore
+from .providers import CATEGORIES, LABELS
 
 DEFAULT_PORT = 1907
 SECRETS_FILE = 'standalone-secrets.json'
@@ -141,11 +144,90 @@ def open_store(data):
         return ConfigStore(broken, root=data)
 
 
+# Environment settings, for hosts whose service page has an env editor (APTV).
+# Setting any of them makes the environment the whole configuration: each
+# start rebuilds every platform from it and admin edits last until restart.
+ENV_FIELDS = {  # suffix -> (config field per platform, kind)
+    'ROOMS': ('rooms', 'list'),
+    'CATEGORIES': ('categories', 'categories'),
+    'AREAS': ('categories', 'categories'),
+    'COUNT': ('count', 'int'),
+    'MIN_VIEWERS': ('min_viewers', 'int'),
+    'QUALITY': ('quality', 'quality'),
+    'ENABLED': ('enabled', 'bool'),
+    'SHARE_LINKS': ('share_links', 'share'),
+    'SESSDATA': ('sessdata', 'text'),
+}
+RENAMED = {'bilibili': {'categories': 'areas', 'count': 'top_per_area', 'min_viewers': 'min_online'}}
+SPLIT = re.compile(r'[\s,，、;；]+')
+
+
+def env_config(environ):
+    """Config patch from DOUYIN_ROOMS-style variables, or None if none are set."""
+    found = {}
+    for platform in DEFAULTS:
+        for suffix, (field, kind) in ENV_FIELDS.items():
+            name = f'{platform.upper()}_{suffix}'
+            value = environ.get(name)
+            if value is None or not str(value).strip():
+                continue
+            field = RENAMED.get(platform, {}).get(field, field)
+            if field not in DEFAULTS[platform]:
+                raise ConfigError(f'{name}: {LABELS[platform]}不支持这个设置')
+            value = str(value).strip()
+            try:
+                if kind == 'list':
+                    parsed = [x for x in SPLIT.split(value) if x]
+                elif kind == 'categories':
+                    names = {v: k for k, v in CATEGORIES.get(platform, {}).items()}
+                    parsed = [names.get(x, x) for x in SPLIT.split(value) if x]
+                elif kind == 'share':
+                    parsed = [m.rstrip('/') + '/' for m in re.findall(r'https://v\.douyin\.com/[A-Za-z0-9_-]+/?', value)]
+                elif kind == 'int':
+                    parsed = int(value)
+                elif kind == 'bool':
+                    if value.lower() not in ('1', '0', 'true', 'false', 'yes', 'no', 'on', 'off'):
+                        raise ValueError
+                    parsed = value.lower() in ('1', 'true', 'yes', 'on')
+                elif kind == 'quality':
+                    parsed = value.upper() if platform == 'douyin' else int(value)
+                else:
+                    parsed = value
+            except ValueError:
+                raise ConfigError(f'{name}: 格式不对') from None
+            found.setdefault(platform, {})[field] = parsed
+    if not found:
+        return None
+    patch = {}
+    for platform, defaults in DEFAULTS.items():
+        values = {k: v for k, v in defaults.items() if k != 'sessdata'}
+        values.update(found.get(platform, {}))
+        if 'enabled' not in found.get(platform, {}):
+            values['enabled'] = any(values.get(k) for k in ('rooms', 'share_links', 'categories', 'areas'))
+        patch[platform] = values
+    return patch
+
+
+def apply_env(store, environ):
+    patch = env_config(environ)
+    if patch is None:
+        return False
+    store.update(patch)
+    for platform, cfg in store.get().items():
+        log(f'[配置] 环境变量 {LABELS.get(platform, platform)}: {describe_config(cfg)}', min_interval=0)
+    return True
+
+
 def build(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     data = choose_data_dir(args.data_dir)
     local = is_loopback(args.bind)
     store = open_store(data)
+    try:
+        from_env = apply_env(store, os.environ)
+    except ConfigError as error:
+        log(f'[配置] 环境变量有误: {error}', min_interval=0)
+        raise SystemExit(f'[live-direct] 环境变量有误: {error}') from None
     if local:
         app = Application(store, '', '', f'http://127.0.0.1:{args.port}', local=True)
     else:
@@ -159,6 +241,7 @@ def build(argv=None):
         # Port 0 asks the OS for a free port.
         app.port = srv.server_address[1]
         app.base = f'http://127.0.0.1:{app.port}'
+    app.from_env = from_env
     return srv, app, data
 
 
@@ -169,12 +252,13 @@ def main(argv=None):
         log(f'[系统] 启动失败: {error} (端口被占用时，先停掉旧的服务)')
         raise
     host, port = srv.server_address[:2]
-    enabled = [name for name, cfg in app.store.get().items() if cfg.get('enabled')]
+    enabled = [LABELS.get(name, name) for name, cfg in app.store.get().items() if cfg.get('enabled')]
     banner = ['==============================================',
               f'Live Direct 已启动 (监听 {host}:{port})',
               f'订阅地址: {app.subscription_prefix(app.base)}/interface.m3u',
               f'管理后台: {app.base}/admin ' + ('(仅本机，免登录)' if app.local else f'(管理员令牌见 {data / SECRETS_FILE})'),
               f'配置目录: {data}',
+              '配置来源: ' + ('环境变量（后台的修改在重启后会被环境变量覆盖）' if app.from_env else '管理后台'),
               '已启用平台: ' + ('、'.join(enabled) if enabled else '无。请先打开管理后台启用平台并添加主播'),
               '==============================================']
     for line in banner:
