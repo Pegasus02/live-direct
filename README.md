@@ -71,10 +71,12 @@ python3 tools/build_aptv.py   # 生成 dist/live-direct-aptv.py
 
 产物是一个只依赖 Python 标准库的 `.py` 文件，内含全部模块和后台页面，运行时在内存中加载，不解压到磁盘。把它交给 APTV 测试版等宿主运行即可，无需任何环境变量：
 
-- 默认监听 `127.0.0.1:1907`，只有本机能访问；可传参数 `[端口] --bind 地址 --public-base 地址 --data-dir 目录`。
-- 首次启动在脚本旁生成 `live-direct-data/`，内含 `config.json` 与 `standalone-secrets.json`（订阅令牌、管理员令牌，权限 0600），重启后订阅地址不变。
-- 仅本机监听时后台免登录（同 `ADMIN_AUTH_ENABLED=false`，写操作仍需 CSRF 令牌）；`--bind` 设为非回环地址时自动要求管理员登录，令牌在 `standalone-secrets.json`。也可用 `--admin-login` 强制登录。
-- 启动日志打印后台和订阅地址；APTV 中订阅 `http://127.0.0.1:1907/s/令牌/interface.m3u`。后台要用与日志相同的地址打开（`127.0.0.1` 与 `localhost` 不能混用，否则保存会被同源检查拒绝）。
+- 默认监听 `127.0.0.1:1907`，即"本机模式"：**不需要令牌，也不用登录**。APTV 中订阅 `http://127.0.0.1:1907/interface.m3u`，后台是 `http://127.0.0.1:1907/admin`，播放地址形如 `/live/平台/房间`。
+- 本机模式不靠令牌，而是只应答来自本机、且 Host 为 `127.0.0.1`/`localhost` 加本服务端口的请求；局域网设备和借 DNS 重绑定访问的网页都会得到 403。地址按请求的 Host 生成，`127.0.0.1` 与 `localhost` 可以混用。
+- 配置保存在脚本旁的 `live-direct-data/config.json`；该目录不可写时依次改用用户目录、临时目录并在日志中提示。配置文件损坏时另存为 `config.broken-时间.json`，以默认配置启动。
+- 运行日志带时间戳输出到标准输出（APTV 的"查看日志"）：启动信息、各平台刷新到的频道数和提示、每次播放解析的结果与失败原因、被拒绝的配置保存。日志不含播放地址和凭据。
+- M3U 带 `#EXT-X-APTV-PREVIEW: FALSE` 与 `#EXT-X-APTV-LATENCY: FALSE`，意在避免 APTV 为预览和测速逐个打开频道（每次打开都是一次真实的平台解析）；这两个指令的效果尚未在真机上确认。
+- `--bind` 设为非回环地址时退回令牌模式：订阅为 `/s/令牌/interface.m3u`，后台要求管理员登录，令牌保存在 `standalone-secrets.json`（权限 0600），需同时用 `--public-base` 指定播放器访问的地址。其他参数：`[端口] --data-dir 目录`。
 
 不要修改生成的文件，改 `live_direct/` 后重新构建。APTV 内置 Python 的版本、后台存活时间等宿主限制尚未在真机上验证。
 
