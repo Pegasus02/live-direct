@@ -15,8 +15,10 @@ class Provider:
         if self.fail:
             raise RuntimeError('private')
         return [Channel('douyin', '123', 'Name\nInjected', 'Title')]
-    def resolve(self, room, config):
+    def resolve(self, room, config, formats=('flv', 'hls')):
         self.calls += 1
+        if formats == ('hls',):
+            return Stream('https://pull.douyincdn.com/live.m3u8', 'hls')
         return Stream('https://pull.douyincdn.com/live.flv', 'flv', headers={'Cookie': 'private'} if self.cookie else {})
 
 
@@ -62,6 +64,14 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.provider.calls, 1)
         with self.assertRaises(LookupError):
             self.engine.resolve('douyin', '999')
+    def test_hls_resolve_cached_separately(self):
+        self.assertEqual(self.engine.resolve('douyin', '123').format, 'flv')
+        with self.assertRaises(LookupError):
+            self.engine.resolve('douyin', '123', hls=True)  # provider does not advertise HLS
+        self.provider.hls = True
+        self.assertEqual(self.engine.resolve('douyin', '123', hls=True).format, 'hls')
+        self.assertEqual(self.engine.resolve('douyin', '123').format, 'flv')
+        self.assertEqual(self.provider.calls, 2)
     def test_cookie_bound_rejected_and_not_cached(self):
         self.provider.cookie = True
         with self.assertRaises(ValueError):

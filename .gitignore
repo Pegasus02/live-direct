@@ -10,3 +10,5 @@ __pycache__/
 private/
 *.log
 .DS_Store
+dist/
+live-direct-data/

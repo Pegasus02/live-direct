@@ -7,7 +7,7 @@ from live_direct import net
 from live_direct.models import ProviderError, RoomOfflineError
 from live_direct.providers.douyin import Douyin, flight_data, normalize_room as dy_room, select_stream as dy_stream
 from live_direct.providers.bilibili import Bilibili, normalize_room as bili_room, select_stream
-from live_direct.providers import douyu, huya
+from live_direct.providers import bilibili as bilibili_mod, douyu, huya
 from live_direct.providers.common import assigned_json, parse_heat
 
 
@@ -32,10 +32,12 @@ def play_fixture(flv=True, codec='avc'):
 
 
 class Fake:
-    def __init__(self, responses):
+    def __init__(self, responses, unreachable=()):
         self.responses = responses
         self.calls = []
         self.forms = []
+        self.unreachable = set(unreachable)
+        self.probes = []
 
     def _fetch(self, url, headers, form=None):
         self.calls.append((url, headers))
@@ -58,6 +60,10 @@ class Fake:
         if isinstance(val, tuple):
             return val
         return [], val
+
+    def probe_media(self, url, platform, format):
+        self.probes.append(url)
+        return not any(host in url for host in self.unreachable)
 
 
 class ProvidersTest(unittest.TestCase):
@@ -108,6 +114,25 @@ class ProvidersTest(unittest.TestCase):
                             'hls_pull_url_map': {'SD1': 'https://a.douyinliving.com/f.m3u8'}})
         self.assertEqual((stream.format, stream.quality), ('hls', 'SD1'))
 
+    def test_hls_only_selection(self):
+        both = {'flv_pull_url': {'HD1': 'https://a.douyinliving.com/f.flv'},
+                'hls_pull_url_map': {'HD1': 'https://a.douyinliving.com/f.m3u8'}}
+        self.assertEqual(dy_stream(both).format, 'flv')
+        self.assertEqual(dy_stream(both, formats=('hls',)).format, 'hls')
+        with self.assertRaises(ProviderError):
+            dy_stream({'flv_pull_url': both['flv_pull_url']}, formats=('hls',))
+        data = play_fixture()
+        data['playurl_info']['playurl']['stream'] += play_fixture(False)['playurl_info']['playurl']['stream']
+        self.assertEqual(select_stream(data).format, 'flv')
+        self.assertEqual(select_stream(data, formats=('hls',)).format, 'hls')
+        with self.assertRaises(ProviderError):
+            select_stream(play_fixture(), formats=('hls',))
+        page, _ = self.huya_page()
+        room = huya.parse_room_page(page, '880')
+        stream = huya.select_stream(room, formats=('hls',))
+        self.assertEqual(stream.format, 'hls')
+        self.assertTrue(stream.url.startswith('https://al.hls.huya.com/src/1-2-abc.m3u8?'))
+
     def test_bili_codec_preference_and_fallback(self):
         data = play_fixture(True, 'hevc')
         data['playurl_info']['playurl']['stream'] += play_fixture(False)['playurl_info']['playurl']['stream']
@@ -118,6 +143,20 @@ class ProvidersTest(unittest.TestCase):
         self.assertEqual(stream.format, 'flv')
         self.assertTrue(stream.url.endswith('?signature=x%2Fy&ts=1'))
         self.assertNotIn('Cookie', stream.headers)
+
+    def test_bili_resolve_skips_unreachable_cdn_hosts(self):
+        data = play_fixture()
+        codec = data['playurl_info']['playurl']['stream'][0]['format'][0]['codec'][0]
+        codec['url_info'] = [{'host': 'https://cn-%d.bilivideo.com' % i, 'extra': '?x=1'} for i in range(6)]
+        client = Fake({'/getRoomPlayInfo': {'code': 0, 'data': data}}, unreachable=['cn-0.', 'cn-1.'])
+        stream = Bilibili(client).resolve('12', {})
+        self.assertTrue(stream.url.startswith('https://cn-2.bilivideo.com/'))
+        self.assertEqual(len(client.probes), 3)
+        # Nothing answers: probe at most PROBE_LIMIT hosts, then keep the best-ranked one.
+        client = Fake({'/getRoomPlayInfo': {'code': 0, 'data': data}}, unreachable=['bilivideo.com'])
+        stream = Bilibili(client).resolve('12', {})
+        self.assertTrue(stream.url.startswith('https://cn-0.bilivideo.com/'))
+        self.assertEqual(len(client.probes), bilibili_mod.PROBE_LIMIT)
 
     def test_bili_manual_canonical_area_and_cookie(self):
         client = Fake({'/get_info': {'code': 0, 'data': {'room_id': 123, 'live_status': 1, 'title': 'Fixture'}},

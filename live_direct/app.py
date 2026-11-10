@@ -20,6 +20,16 @@ from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 MEDIA_SUFFIXES = tuple('.' + suffix for suffixes in PLATFORM_MEDIA.values() for suffix in suffixes)
+# Filled by the single-file build (tools/build_aptv.py); empty means read web/.
+ASSETS = {}
+WEB_DIR = Path(__file__).parent / 'web'
+
+
+def read_asset(name):
+    data = ASSETS.get(name)
+    return data if data is not None else (WEB_DIR / name).read_bytes()
+
+
 LOGO_SUFFIXES = ('.hdslb.com', '.douyinpic.com', '.douyincdn.com', '.byteimg.com', '.douyucdn.cn', '.msstatic.com')
 
 
@@ -219,14 +229,16 @@ class Engine:
         finally:
             self.resolve_slots.release()
 
-    def resolve(self, platform, room):
+    def resolve(self, platform, room, hls=False):
         with self.lock:
             cfg = self.store.get()
             if platform not in self.providers or not cfg[platform].get('enabled'):
                 raise LookupError()
             if (platform, room) not in self.channels:
                 raise LookupError()
-            key = (self.generation, platform, room)
+            if hls and not getattr(self.providers[platform], 'hls', False):
+                raise LookupError()
+            key = (self.generation, platform, room, hls)
             cached = self.cache.get(key)
             if cached and cached[0] > time.monotonic():
                 if cached[1] is None:
@@ -250,7 +262,8 @@ class Engine:
         stream = None
         succeeded = False
         try:
-            stream = self.providers[platform].resolve(room, cfg[platform])
+            stream = (self.providers[platform].resolve(room, cfg[platform], formats=('hls',)) if hls
+                      else self.providers[platform].resolve(room, cfg[platform]))
             if not safe_media(stream.url, platform):
                 raise ValueError('invalid media')
             # A 302 does not forward source request headers to the player.
@@ -293,7 +306,6 @@ class Application:
         self.sessions = {}
         self.session_lock = threading.Lock()
         self.login_attempts = {}
-        self.web = Path(__file__).parent / 'web'
 
     def login(self, token, client):
         now = time.monotonic()
@@ -396,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
             name = 'index.html' if path in admin_pages else assets[path]
             typ = {'html': 'text/html; charset=utf-8', 'css': 'text/css', 'js': 'application/javascript',
                    'svg': 'image/svg+xml', 'png': 'image/png'}[name.rsplit('.', 1)[1]]
-            return self.reply(200, (self.app.web / name).read_bytes(), typ)
+            return self.reply(200, read_asset(name), typ)
         if path.startswith('/api/'):
             if not session:
                 return self.reply(401)
@@ -482,10 +494,11 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     return self.reply(503)
                 return self.reply(302, headers={'Location': stream.url})
-            if len(parts) == 6 and parts[3] == 'live' and ROOM.fullmatch(parts[5]):
+            if len(parts) == 6 and parts[3] in ('live', 'hls') and ROOM.fullmatch(parts[5]):
                 self.app.engine.maybe_refresh()
                 try:
-                    stream = self.app.engine.resolve(parts[4], parts[5])
+                    # /hls/ serves players without FLV support (e.g. iOS AVPlayer).
+                    stream = self.app.engine.resolve(parts[4], parts[5], hls=parts[3] == 'hls')
                 except LookupError:
                     return self.reply(404)
                 except Exception:

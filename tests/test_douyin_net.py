@@ -206,3 +206,42 @@ class DouyinNetTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ProbeMediaTests(unittest.TestCase):
+    URL = 'http://d1--cn-gotcha1.bilivideo.com/live-bvc/x.flv?sig=a%2Fb'
+
+    def probe(self, response=None, error=None):
+        connection = Mock()
+        if error:
+            connection.request.side_effect = error
+        connection.getresponse.return_value = response
+        factory = Mock(return_value=connection)
+        with patch.object(net.http.client, 'HTTPSConnection', factory):
+            result = net.probe_media(self.URL, 'bilibili', 'flv')
+        return result, factory, connection
+
+    def test_head_without_referer_over_https(self):
+        result, factory, connection = self.probe(Response(206))
+        self.assertTrue(result)
+        self.assertEqual(factory.call_args.args[0], 'd1--cn-gotcha1.bilivideo.com')
+        self.assertLessEqual(factory.call_args.kwargs['timeout'], net.PROBE_TIMEOUT)
+        args, kwargs = connection.request.call_args
+        self.assertEqual(args, ('HEAD', '/live-bvc/x.flv?sig=a%2Fb'))
+        self.assertNotIn('Referer', kwargs['headers'])
+        self.assertNotIn('Cookie', kwargs['headers'])
+        connection.close.assert_called_once()
+
+    def test_rejections_and_errors_are_unreachable(self):
+        self.assertFalse(self.probe(Response(403))[0])
+        self.assertFalse(self.probe(Response(302, {'Location': 'https://evil.test/'}))[0])
+        result, _, connection = self.probe(error=OSError('tls'))
+        self.assertFalse(result)
+        connection.close.assert_called_once()
+
+    def test_untrusted_url_never_connects(self):
+        factory = Mock()
+        with patch.object(net.http.client, 'HTTPSConnection', factory):
+            self.assertFalse(net.probe_media('https://evil.test/x.flv', 'bilibili', 'flv'))
+            self.assertFalse(net.probe_media(self.URL, 'bilibili', 'hls'))
+        factory.assert_not_called()

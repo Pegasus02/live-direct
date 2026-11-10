@@ -52,6 +52,28 @@ class HTTPTests(unittest.TestCase):
         s,h,b=self.req('POST','/api/logout','{}',{'Cookie':cookie,'X-CSRF-Token':csrf})
         self.assertEqual(s,204);self.assertIn('Max-Age=0',h['Set-Cookie'])
         self.assertEqual(self.req('GET','/api/config',headers={'Cookie':cookie})[0],401)
+    def test_live_and_hls_redirects(self):
+        from live_direct.models import Channel, Stream
+        class Flv:
+            def discover(self, config): return [Channel('douyu', '1', 'x')]
+            def resolve(self, room, config): return Stream('https://hw-tct.douyucdn.cn/live/a.flv', 'flv')
+        class Both:
+            hls = True
+            def discover(self, config): return [Channel('huya', '2', 'y')]
+            def resolve(self, room, config, formats=('flv', 'hls')):
+                return Stream('https://al.hls.huya.com/src/a.m3u8', 'hls') if formats == ('hls',) else Stream('https://al.flv.huya.com/src/a.flv', 'flv')
+        self.store.update({'douyu': {'enabled': True}, 'huya': {'enabled': True}})
+        engine = self.server.app.engine
+        engine.providers = {'douyu': Flv(), 'huya': Both()}
+        engine.refresh()
+        base = '/s/' + 'b'*32
+        s, h, _ = self.req('GET', base + '/live/huya/2')
+        self.assertEqual((s, h['Location']), (302, 'https://al.flv.huya.com/src/a.flv'))
+        s, h, _ = self.req('GET', base + '/hls/huya/2')
+        self.assertEqual((s, h['Location']), (302, 'https://al.hls.huya.com/src/a.m3u8'))
+        self.assertEqual(self.req('GET', base + '/live/douyu/1')[0], 302)
+        self.assertEqual(self.req('GET', base + '/hls/douyu/1')[0], 404)
+        self.assertEqual(self.req('GET', '/s/' + 'c'*32 + '/hls/huya/2')[0], 404)
     def test_cold_subscription_retryable_not_empty_success(self):
         entered, release = threading.Event(), threading.Event()
         class Slow:
