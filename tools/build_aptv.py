@@ -21,6 +21,7 @@ TEMPLATE = '''#!/usr/bin/env python3
 # edit the live_direct package, not this file. License: GPL-3.0.
 # Usage: python3 live-direct-aptv.py [port] [--bind ADDR] [--data-dir DIR]
 import base64 as _b64
+import importlib as _importlib
 import importlib.abc as _abc
 import importlib.util as _util
 import sys as _sys
@@ -55,11 +56,13 @@ class _Finder(_abc.MetaPathFinder):
 if not any(isinstance(f, _Finder) for f in _sys.meta_path):
     _sys.meta_path.insert(0, _Finder())
 
-import live_direct.app as _app  # noqa: E402
+# importlib instead of import statements: hosts such as APTV scan a script's
+# imports and would report the embedded package as a missing module.
+_app = _importlib.import_module('live_direct.app')
 _app.ASSETS.update({{k: _b64.b64decode(v) for k, v in _ASSETS.items()}})
 
 if __name__ == '__main__':
-    import live_direct.standalone as _standalone
+    _standalone = _importlib.import_module('live_direct.standalone')
     _standalone.SCRIPT_PATH = globals().get('__file__') or ''
     _standalone.main()
 '''
