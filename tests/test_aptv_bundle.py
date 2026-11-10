@@ -87,6 +87,13 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(json.loads((data / 'config.json').read_text())['douyin']['count'], 3)
         self.assertFalse((data / 'standalone-secrets.json').exists())
 
+    def test_bundle_imports_only_standard_modules(self):
+        import ast
+        tree = ast.parse(self.script.read_text(encoding='utf-8'))
+        names = {alias.name.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+        names |= {node.module.split('.')[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+        self.assertTrue(names <= set(sys.stdlib_module_names), names - set(sys.stdlib_module_names))
+
     def test_localhost_name_works_and_other_hosts_are_refused(self):
         base, _ = self.start()
         port = base.rsplit(':', 1)[1]
