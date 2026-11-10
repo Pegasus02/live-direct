@@ -107,6 +107,25 @@ class ReflowTests(unittest.TestCase):
             Douyin(Client(body))._shared_room(LINK)
         self.assertNotIsInstance(cm.exception, RoomOfflineError)
 
+    def test_ended_share_cannot_overwrite_current_live_identity(self):
+        client = Client()
+        provider = Douyin(client)
+        cfg = {'share_links': [LINK, 'https://v.douyin.com/OldSession/']}
+        provider._shared_room(LINK)
+        original = provider._identities[WEB]
+        client.body = fixture(4)
+        with self.assertRaises(RoomOfflineError):
+            provider._shared_room(cfg['share_links'][1])
+        self.assertEqual(provider._identities[WEB], original)
+        client.body = fixture()
+        self.assertEqual(provider.resolve(WEB, cfg).format, 'flv')
+
+    def test_invalid_status_does_not_seed_identity(self):
+        provider = Douyin(Client(fixture(None)))
+        with self.assertRaises(ProviderError):
+            provider._shared_room(LINK)
+        self.assertEqual(provider._identities, {})
+
     def test_captcha_not_offline(self):
         with self.assertRaises(ProviderError) as cm:
             Douyin(Client()).resolve(WEB, {})

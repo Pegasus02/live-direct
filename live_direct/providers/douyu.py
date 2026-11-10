@@ -150,16 +150,67 @@ class Douyu:
         return common.discover('douyu', 'Douyu', self.warnings, manual, self._room, categories, category,
                                count, int(config.get('min_viewers', 0)))
 
+    def resolve_cdn(self, room_id, config, cdn):
+        """Diagnostic only: select a fixed line advertised by this fresh response.
+
+        Three fixed-host requests, no persistent state or default resolver changes.
+        Reuse this request's websec form for discovery and the selected line.
+        """
+        if cdn not in ('hw-h5', 'hs-h5'):
+            raise ProviderError('Unsupported Douyu diagnostic line')
+        rid = normalize_room(room_id)
+        payload = self.client.fetch_json(
+            ORIGIN + '/wgapi/livenc/liveweb/websec/getEncryption?did=' + DID,
+            headers=HEADERS)
+        if not isinstance(payload, dict) or payload.get('error') != 0:
+            raise ProviderError('Douyu play key unavailable')
+        form = sign(payload.get('data'), rid, int(time.time()))
+        form.update({'rate': str(int(config.get('quality', 0))), 'ver': PLAYER_VERSION,
+                     'iar': '0', 'ive': '0', 'rid': rid, 'hevc': '0', 'fa': '0', 'sov': '0'})
+        headers = dict(HEADERS, Origin=ORIGIN)
+        endpoint = PLAY_API + '/lapi/live/getH5PlayV1/' + rid
+        advertised = self.client.fetch_json(endpoint, headers=headers, form=dict(form))
+        if not isinstance(advertised, dict) or advertised.get('error') != 0:
+            raise ProviderError('Douyu play API request failed')
+        data = advertised.get('data')
+        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
+        if not isinstance(lines, list) or not any(
+                isinstance(line, dict) and line.get('cdn') == cdn for line in lines):
+            raise ProviderError('Douyu diagnostic line not advertised')
+        form['cdn'] = cdn
+        selected = self.client.fetch_json(endpoint, headers=headers, form=form)
+        if not isinstance(selected, dict) or selected.get('error') != 0:
+            raise ProviderError('Douyu play API request failed')
+        data = selected.get('data')
+        if not isinstance(data, dict) or data.get('rtmp_cdn') != cdn:
+            raise ProviderError('Douyu diagnostic line not selected')
+        return stream_from(data)
+
     def resolve(self, room_id, config):
         rid = self._room(normalize_room(room_id))['id']
         data = self._play(rid, int(config.get('quality', 0)))
+        # APTV same-room comparison confirmed hw-h5/hs-h5 work while the
+        # default line repeats frames. Prefer only actually advertised lines;
+        # verify acknowledgement so a silent fallback is not called a success.
+        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
+        current = data.get('rtmp_cdn') if isinstance(data, dict) else None
+        advertised = {line.get('cdn') for line in (lines if isinstance(lines, list) else [])
+                      if isinstance(line, dict) and isinstance(line.get('cdn'), str)}
+        for preferred in ('hw-h5', 'hs-h5'):
+            if preferred not in advertised:
+                continue
+            try:
+                candidate = data if current == preferred else self._play(rid, int(config.get('quality', 0)), preferred)
+                if not isinstance(candidate, dict) or candidate.get('rtmp_cdn') != preferred:
+                    continue
+                return stream_from(candidate)
+            except ProviderError:
+                continue
         try:
             return stream_from(data)
         except ProviderError:
             pass
-        # The default line was not a trusted HTTPS CDN; ask for the other advertised lines.
-        lines = data.get('cdnsWithName') if isinstance(data, dict) else None
-        current = data.get('rtmp_cdn') if isinstance(data, dict) else None
+        # The default URL is untrusted; retain bounded fallback for other lines.
         for line in (lines if isinstance(lines, list) else [])[:4]:
             cdn = line.get('cdn') if isinstance(line, dict) else None
             if not isinstance(cdn, str) or cdn == current or not re.fullmatch(r'[A-Za-z0-9_-]{1,32}', cdn):

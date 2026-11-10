@@ -112,13 +112,27 @@ export class Douyu implements Provider {
     const rid = (await this.room(normalizeRoom(roomId))).id
     const rate = Math.trunc(Number(config.quality ?? 0))
     const data = await this.play(rid, rate)
+    // 与服务端一致：APTV 同房间对比确认 hw-h5/hs-h5 可用而默认线路会重复帧。
+    // 只选本次响应确实宣称的线路，并核对返回的 rtmp_cdn，避免把静默回退当成成功。
+    const allLines: any[] = Array.isArray(data?.cdnsWithName) ? data.cdnsWithName : []
+    const advertised = new Set(allLines.filter(l => l && typeof l === "object" && typeof l.cdn === "string").map(l => l.cdn))
+    for (const preferred of ["hw-h5", "hs-h5"]) {
+      if (!advertised.has(preferred)) continue
+      try {
+        const candidate = data?.rtmp_cdn === preferred ? data : await this.play(rid, rate, preferred)
+        if (!candidate || typeof candidate !== "object" || candidate.rtmp_cdn !== preferred) continue
+        return streamFrom(candidate)
+      } catch (e) {
+        if (!(e instanceof ProviderError)) throw e
+      }
+    }
     try {
       return streamFrom(data)
     } catch (e) {
       if (!(e instanceof ProviderError)) throw e
     }
-    // 默认线路不是可信 HTTPS CDN 时，换其他宣称的线路。
-    const lines = Array.isArray(data?.cdnsWithName) ? data.cdnsWithName.slice(0, 4) : []
+    // 默认地址不可信时，保留对其他宣称线路的有限回退。
+    const lines = allLines.slice(0, 4)
     for (const line of lines) {
       const cdn = line?.cdn
       if (typeof cdn !== "string" || cdn === data.rtmp_cdn || !/^[A-Za-z0-9_-]{1,32}$/.test(cdn)) continue

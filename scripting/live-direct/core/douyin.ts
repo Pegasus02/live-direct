@@ -124,11 +124,12 @@ export class Douyin implements Provider {
     const rid = typeof owner === "object" ? String(owner.web_rid || "") : ""
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(rid) || (expected && rid !== expected)) throw new ProviderError("Douyin reflow room identity mismatch")
     if (String(room.id_str || "") !== String(internal)) throw new ProviderError("Douyin reflow internal identity mismatch")
-    if (renew) this.remember(rid, internal, source)
     if (room.status === 4 || room.status === "4") throw new RoomOfflineError("Douyin room is offline")
     if (room.status !== 2 && room.status !== "2") throw new ProviderError("Douyin live status unavailable")
     const r = row({ room, web_rid: rid })
     if (!r || typeof r.streams !== "object") throw new ProviderError("Douyin reflow stream unavailable")
+    // 分享链接对应的是一场直播而非主播本身：已结束的旧场次不能覆盖同时发现的正在直播的场次。
+    if (renew) this.remember(rid, internal, source)
     return r
   }
 

@@ -102,7 +102,8 @@ assert.match(m3u.body, /group-title="斗鱼",斗鱼主播\nhttp:\/\/127\.0\.0\.1
 
 let r = await server.request("GET", base + "/live/huya/880")
 assert.equal(r.statusCode, 302)
-assert.match(r.headers.Location, /^https:\/\/al\.flv\.huya\.com\/src\/1-2-abc\.flv\?wsSecret=/)
+// Huya prefers HLS on /live/ too (web FLV lines reject player connections).
+assert.match(r.headers.Location, /^https:\/\/al\.hls\.huya\.com\/src\/1-2-abc\.m3u8\?wsSecret=/)
 r = await server.request("GET", base + "/hls/huya/880")
 assert.equal(r.statusCode, 302)
 assert.match(r.headers.Location, /^https:\/\/al\.hls\.huya\.com\/src\/1-2-abc\.m3u8\?/)

@@ -117,8 +117,9 @@ export function signUrl(line: any, uid: string, bitrate: number, fmt: Format, no
   return mediaUrl(url, "huya", fmt)
 }
 
-/** 先在所有线路上找 FLV，再找 HLS；start 决定从哪条 CDN 线路开始。 */
-export function selectStream(room: Row, quality = 0, start = 0, nowMs?: number, formats: Format[] = ALL_FORMATS): Stream {
+/** 先在所有线路上找 FLV，再找 HLS（preferHls 时反过来）；start 决定从哪条 CDN 线路开始。 */
+export function selectStream(room: Row, quality = 0, start = 0, nowMs?: number, formats: Format[] = ALL_FORMATS, preferHls = false): Stream {
+  if (preferHls) formats = (["hls", "flv"] as Format[]).filter(f => formats.includes(f))
   const lines = (room.lines as any[]).filter(l => l && typeof l === "object")
   if (!lines.length) throw new ProviderError("Huya room has no trusted playable stream")
   start %= lines.length
@@ -171,6 +172,7 @@ export class Huya implements Provider {
 
   async resolve(roomId: string, config: any, formats: Format[] = ALL_FORMATS): Promise<Stream> {
     const room = await this.room(normalizeRoom(roomId))
-    return selectStream(room, Math.trunc(Number(config.quality ?? 0)), this.lineStart(room.id), undefined, formats)
+    // 与服务端一致：网页 FLV 线路实测会拒绝播放器连接，HLS 可正常解码，故优先 HLS。
+    return selectStream(room, Math.trunc(Number(config.quality ?? 0)), this.lineStart(room.id), undefined, formats, true)
   }
 }
