@@ -126,6 +126,55 @@ class ReflowTests(unittest.TestCase):
             provider._shared_room(LINK)
         self.assertEqual(provider._identities, {})
 
+    def test_ended_share_follows_current_broadcast_and_caches_identity(self):
+        new_id = '7699847535520844582'
+        class Rollover(Client):
+            def fetch_douyin_reflow(self, internal):
+                self.calls.append(('reflow', internal))
+                body = fixture(4 if internal == INTERNAL else 2)
+                room = body['data']['room']
+                room['id_str'] = internal
+                room['owner'].update(id_str='123456', own_room={'room_ids_str': [new_id]})
+                return body
+        client = Rollover()
+        provider = Douyin(client)
+        cfg = {'enabled': True, 'share_links': [LINK]}
+        self.assertEqual([c.room_id for c in provider.discover(cfg)], [WEB])
+        self.assertEqual(provider._identities[WEB][0], new_id)
+        self.assertEqual(provider.resolve(WEB, cfg).format, 'flv')
+        self.assertFalse(any(k == 'html' for k, _ in client.calls))
+        self.assertEqual(provider.warnings, [])
+        provider._identities[WEB] = (new_id, LINK, time.monotonic() - 1)
+        self.assertEqual(provider.resolve(WEB, cfg).format, 'flv')
+
+    def test_rollover_rejects_wrong_anchor_and_limits_hops(self):
+        new_id = '7699847535520844582'
+        for wrong_web, wrong_owner, still_offline in [(True, False, False), (False, True, False), (False, False, True)]:
+            class Rollover(Client):
+                def fetch_douyin_reflow(self, internal):
+                    self.calls.append(('reflow', internal))
+                    old = internal == INTERNAL
+                    body = fixture(4 if old or still_offline else 2,
+                                   'wrong' if not old and wrong_web else WEB)
+                    room = body['data']['room']
+                    room['id_str'] = internal
+                    room['owner'].update(id_str='999' if not old and wrong_owner else '123',
+                                         own_room={'room_ids_str': [new_id if old else INTERNAL]})
+                    return body
+            client = Rollover()
+            with self.subTest(wrong_web=wrong_web, wrong_owner=wrong_owner, offline=still_offline):
+                with self.assertRaises(ProviderError):
+                    Douyin(client)._shared_room(LINK)
+                self.assertEqual(sum(k == 'reflow' for k, _ in client.calls), 2)
+
+    def test_rollover_malformed_hint_not_silently_offline(self):
+        for hint in [{'room_ids_str': 'invalid'}, {'room_ids_str': ['1'*19, '2'*19]}]:
+            body = fixture(4)
+            body['data']['room']['owner'].update(id_str='123', own_room=hint)
+            with self.assertRaises(ProviderError) as cm:
+                Douyin(Client(body))._shared_room(LINK)
+            self.assertNotIsInstance(cm.exception, RoomOfflineError)
+
     def test_captcha_not_offline(self):
         with self.assertRaises(ProviderError) as cm:
             Douyin(Client()).resolve(WEB, {})

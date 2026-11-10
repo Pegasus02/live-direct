@@ -167,6 +167,37 @@ class HTTPTests(unittest.TestCase):
             s,h,b=self.req('GET',path)
             self.assertEqual(s,200);self.assertIn(b'<!doctype html>',b)
         self.assertEqual(self.req('GET','/admin/unknown')[0],404)
+    def test_fixed_subscription_opt_in_rejects_legacy_routes(self):
+        from unittest.mock import patch
+        from live_direct.models import Channel, Stream
+        engine = self.server.app.engine
+        self.assertEqual(self.req('GET', '/interface.m3u')[0], 404)
+        self.assertEqual(self.req('GET', '/live/douyin/123')[0], 404)
+        self.server.app.fixed_subscription = True
+        engine.channels = {('douyin', '123'): Channel('douyin', '123', 'Sample', '', '')}
+        with patch.object(engine, 'maybe_refresh'):
+            s,h,b = self.req('GET', '/interface.m3u')
+            self.assertEqual(s, 200)
+            self.assertIn(b'http://localhost/live/douyin/123', b)
+            self.assertNotIn(b'/s/', b)
+            self.assertEqual(self.req('HEAD', '/interface.m3u')[2], b'')
+            self.assertEqual(self.req('POST', '/interface.m3u', '')[0], 405)
+            legacy = self.req('GET', '/s/'+'b'*32+'/interface.m3u')
+            self.assertEqual(legacy[0], 404)
+            for suffix in ['live/douyin/123', 'diagnostics/douyu.m3u', 'probe/douyu/123/hw-h5']:
+                self.assertEqual(self.req('GET', '/s/'+'b'*32+'/'+suffix)[0], 404)
+            self.assertEqual(self.req('HEAD', '/s/'+'b'*32+'/interface.m3u')[0], 404)
+            with patch.object(engine, 'resolve', return_value=Stream('https://example.com/live.flv', 'flv', '', {})):
+                self.assertEqual(self.req('GET', '/live/douyin/123')[0], 302)
+                self.assertEqual(self.req('POST', '/live/douyin/123', '')[0], 405)
+            with patch.object(engine, 'resolve', side_effect=LookupError):
+                self.assertEqual(self.req('GET', '/live/unknown/123')[0], 404)
+        self.assertEqual(self.req('GET', '/api/config')[0], 401)
+        self.assertEqual(self.req('GET', '/admin')[0], 303)
+        self.assertEqual(self.req('GET', '/s/wrong/interface.m3u')[0], 404)
+        for path in ['/live/douyin/123/extra', '/live/douyin/abc', '/interface.m3u?x=1']:
+            self.assertEqual(self.req('GET', path)[0], 404)
+
     def test_subscription_auth_and_headers(self):
         self.assertEqual(self.req('GET','/s/wrong/interface.m3u')[0],404)
         s,h,b=self.req('HEAD','/s/'+'b'*32+'/interface.m3u')

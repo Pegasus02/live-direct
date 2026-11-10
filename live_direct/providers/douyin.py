@@ -137,7 +137,7 @@ class Douyin:
                 self._identities.clear()
             self._identities[rid] = (str(internal), source, time.monotonic() + 60)
 
-    def _reflow(self, internal, expected=None, source='', renew=True):
+    def _reflow(self, internal, expected=None, source='', renew=True, *, follow_current=True, expected_owner=None):
         body = self.client.fetch_douyin_reflow(internal)
         if not isinstance(body, dict) or body.get('status_code') != 0:
             raise ProviderError('Douyin reflow request rejected')
@@ -151,7 +151,28 @@ class Douyin:
             raise ProviderError('Douyin reflow room identity mismatch')
         if str(room.get('id_str') or '') != str(internal):
             raise ProviderError('Douyin reflow internal identity mismatch')
+        owner_id = str(owner.get('id_str') or owner.get('id') or '')
+        if expected_owner and owner_id != expected_owner:
+            raise ProviderError('Douyin reflow anchor identity mismatch')
         if room.get('status') in (4, '4'):
+            # Old shares identify a broadcast. Official old-room metadata may
+            # point to the anchor's current broadcast; follow at most one hop.
+            own_room = owner.get('own_room')
+            if follow_current and isinstance(own_room, dict):
+                candidates = own_room.get('room_ids_str')
+                if candidates is None:
+                    candidates = own_room.get('room_ids', [])
+                if not isinstance(candidates, list) or len(candidates) > 8:
+                    raise ProviderError('Douyin current room metadata unavailable')
+                current = list(dict.fromkeys(str(v) for v in candidates
+                                            if re.fullmatch(r'[0-9]{19}', str(v)) and str(v) != internal))
+                if len(current) > 1:
+                    raise ProviderError('Douyin current room identity ambiguous')
+                if current:
+                    if not re.fullmatch(r'[0-9]{1,24}', owner_id):
+                        raise ProviderError('Douyin anchor identity unavailable')
+                    return self._reflow(current[0], rid, source, True,
+                                        follow_current=False, expected_owner=owner_id)
             raise RoomOfflineError('Douyin room is offline')
         if room.get('status') not in (2, '2'):
             raise ProviderError('Douyin live status unavailable')

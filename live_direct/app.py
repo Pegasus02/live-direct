@@ -196,10 +196,10 @@ class Engine:
         with self.lock:
             return [{'platform': p, 'room_id': r, 'name': clean_text(c.name), 'title': clean_text(c.title)} for (p, r), c in self.channels.items()]
 
-    def playlist(self, public_base, sub_token):
+    def playlist(self, public_base, sub_token, *, fixed=False):
         self.maybe_refresh()
         lines = ['#EXTM3U', *self.playlist_directives]
-        prefix = f'{public_base}/s/{sub_token}' if sub_token else public_base
+        prefix = public_base if (fixed or not sub_token) else f'{public_base}/s/{sub_token}'
         with self.lock:
             if not self.channels and (self.updated == 0 or any(v.get('status') == 'error' for v in self.health.values())):
                 if any(c.get('enabled') for c in self.store.get().values()):
@@ -319,11 +319,12 @@ class Engine:
 
 
 class Application:
-    def __init__(self, store, admin_token, sub_token, public_base, engine=None, auth_enabled=True, local=False):
+    def __init__(self, store, admin_token, sub_token, public_base, engine=None, auth_enabled=True, local=False, fixed_subscription=False):
         # local: this-device-only mode. No tokens or login; instead every
         # request must come from a loopback peer and name a loopback Host
         # (which also defeats DNS rebinding from a browser on the device).
         self.local = local
+        self.fixed_subscription = fixed_subscription
         if local:
             auth_enabled, admin_token, sub_token = False, '', ''
         self.auth_enabled = auth_enabled
@@ -362,7 +363,7 @@ class Application:
         return 'http://' + host
 
     def subscription_prefix(self, base):
-        return base if self.local else base + '/s/' + self.sub_token
+        return base if (self.local or self.fixed_subscription) else base + '/s/' + self.sub_token
 
     def login(self, token, client):
         now = time.monotonic()
@@ -541,6 +542,28 @@ class Handler(BaseHTTPRequestHandler):
                         self.app.engine.start_refresh()
                     return self.json_reply(200, res)
             return self.reply(404)
+        # Explicit LAN opt-in replaces legacy token routes, without redirects.
+        fixed_playlist = path == '/interface.m3u'
+        fixed_live = re.fullmatch(r'/live/([a-z]+)/([0-9]{1,20})', path)
+        if self.app.fixed_subscription and (fixed_playlist or fixed_live):
+            if self.command not in ('GET', 'HEAD'):
+                return self.reply(405)
+            if fixed_playlist:
+                try:
+                    playlist = self.app.engine.playlist(self.app.base, self.app.sub_token, fixed=True)
+                except RuntimeError:
+                    return self.reply(503, b'Channels updating; retry shortly', headers={'Retry-After': '5'})
+                return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
+            self.app.engine.maybe_refresh()
+            try:
+                stream = self.app.engine.resolve(*fixed_live.groups())
+            except LookupError:
+                return self.reply(404)
+            except Exception:
+                return self.reply(503)
+            return self.reply(302, headers={'Location': stream.url})
+        if self.app.fixed_subscription:
+            return self.reply(404)
         parts = path.split('/')
         if self.app.local:
             # Same routes without the /s/<token> prefix.
@@ -637,7 +660,10 @@ def main():
     auth = os.environ.get('ADMIN_AUTH_ENABLED', 'true').lower()
     if auth not in ('true', 'false'):
         raise ValueError('ADMIN_AUTH_ENABLED must be true or false')
-    app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true')
+    fixed = os.environ.get('FIXED_SUBSCRIPTION_ENABLED', 'false').lower()
+    if fixed not in ('true', 'false'):
+        raise ValueError('FIXED_SUBSCRIPTION_ENABLED must be true or false')
+    app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true', fixed_subscription=fixed == 'true')
     with Server(('0.0.0.0', int(os.environ.get('PORT', '8080'))), app) as srv:
         # Warm the channel list so the first player request is not a cold 503.
         app.engine.start_refresh()
