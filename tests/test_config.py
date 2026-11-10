@@ -237,3 +237,33 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SandboxRootTests(unittest.TestCase):
+    """iOS apps cannot open ancestors of their container; anchor at root."""
+    def setUp(self):
+        import os, tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.outer = Path(self.tmp.name).resolve() / 'container'
+        self.data = self.outer / 'app' / 'data'
+        self.data.mkdir(parents=True)
+        os.chmod(self.outer, 0o311)  # traversable, not readable: like the sandbox
+
+    def tearDown(self):
+        import os
+        os.chmod(self.outer, 0o755)
+        self.tmp.cleanup()
+
+    def test_walk_from_slash_fails_but_root_anchor_works(self):
+        import os
+        if os.geteuid() == 0:
+            self.skipTest('root ignores directory permissions')
+        with self.assertRaises(ConfigError):
+            ConfigStore(self.data / 'config.json')
+        store = ConfigStore(self.data / 'config.json', root=self.data)
+        store.update({'douyin': {'count': 2}})
+        self.assertEqual(ConfigStore(self.data / 'config.json', root=self.data).get()['douyin']['count'], 2)
+
+    def test_root_must_contain_path(self):
+        with self.assertRaises(ConfigError):
+            ConfigStore(self.data / 'config.json', root=self.data / 'other')
