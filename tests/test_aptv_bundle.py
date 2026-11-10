@@ -53,48 +53,72 @@ class BundleTests(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
         self.procs.append(proc)
         lines = []
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and len(lines) < 4:
+        while len(lines) < 40:
             line = proc.stdout.readline()
             if not line:
                 break
             lines.append(line)
+            if '=====' in line and any('监听' in x for x in lines):
+                break
         out = ''.join(lines)
-        base = re.search(r'已启动: (\S+)', out)
-        self.assertIsNotNone(base, out)
-        return base.group(1), out
+        port = re.search(r'监听 [^:]+:(\d+)', out)
+        self.assertIsNotNone(port, out)
+        return 'http://127.0.0.1:' + port.group(1), out
 
-    def test_runs_without_configuration(self):
+    def test_local_mode_needs_no_token(self):
         base, out = self.start()
-        self.assertTrue(base.startswith('http://127.0.0.1:'))
+        self.assertIn(f'订阅地址: {base}/interface.m3u', out)
+        self.assertNotIn('/s/', out)
         self.assertEqual(call(base + '/health'), (200, b'ok'))
         status, page = call(base + '/admin')
         self.assertEqual(status, 200)
         self.assertEqual(page, (build_aptv.PKG / 'web' / 'index.html').read_bytes())
         self.assertEqual(call(base + '/static/logo-huya.png')[1], (build_aptv.PKG / 'web' / 'logo-huya.png').read_bytes())
-        m3u = re.search(r'订阅地址: (\S+)', out).group(1)
-        self.assertEqual(call(m3u)[1].splitlines()[0], b'#EXTM3U')
-        # Saving config goes through the same CSRF check as the server build.
+        m3u = call(base + '/interface.m3u')[1].decode().splitlines()
+        self.assertEqual(m3u[:3], ['#EXTM3U', '#EXT-X-APTV-PREVIEW: FALSE', '#EXT-X-APTV-LATENCY: FALSE'])
+        self.assertEqual(json.loads(call(base + '/api/subscription')[1])['url'], base + '/interface.m3u')
+        # Unknown rooms are a plain 404 on the token-free route, not a 5xx.
+        self.assertEqual(call(base + '/live/douyin/123')[0], 404)
         csrf = json.loads(call(base + '/api/session')[1])['csrf']
         status, _ = call(base + '/api/config', json.dumps({'douyin': {'count': 3}}).encode(),
                          {'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'Origin': base})
         self.assertEqual(status, 200)
         data = self.dir / 'live-direct-data'
         self.assertEqual(json.loads((data / 'config.json').read_text())['douyin']['count'], 3)
-        self.assertEqual((data / 'standalone-secrets.json').stat().st_mode & 0o777, 0o600)
+        self.assertFalse((data / 'standalone-secrets.json').exists())
 
-    def test_tokens_persist_across_restarts(self):
-        first = re.search(r'订阅地址: http://[^/]+(\S+)', self.start()[1]).group(1)
-        second = re.search(r'订阅地址: http://[^/]+(\S+)', self.start()[1]).group(1)
-        self.assertEqual(first, second)
+    def test_localhost_name_works_and_other_hosts_are_refused(self):
+        base, _ = self.start()
+        port = base.rsplit(':', 1)[1]
+        alias = 'http://localhost:' + port
+        # URLs follow the Host the client used, so either name works end to end.
+        self.assertEqual(json.loads(call(base + '/api/subscription', headers={'Host': 'localhost:' + port})[1])['url'], alias + '/interface.m3u')
+        csrf = json.loads(call(base + '/api/session')[1])['csrf']
+        post = {'Content-Type': 'application/json', 'X-CSRF-Token': csrf}
+        body = json.dumps({'douyin': {'count': 2}}).encode()
+        self.assertEqual(call(base + '/api/config', body, dict(post, Host='localhost:' + port, Origin=alias))[0], 200)
+        # DNS rebinding: a web page reaching us under its own name gets nothing.
+        for host in ('evil.example:' + port, '192.168.1.5:' + port, 'localhost:1'):
+            self.assertEqual(call(base + '/admin', headers={'Host': host})[0], 403, host)
+            self.assertEqual(call(base + '/interface.m3u', headers={'Host': host})[0], 403, host)
+        self.assertEqual(call(base + '/api/config', body, dict(post, Origin='http://evil.example'))[0], 403)
 
-    def test_non_loopback_bind_requires_login(self):
+    def test_corrupt_config_is_set_aside(self):
+        data = self.dir / 'live-direct-data'
+        data.mkdir()
+        (data / 'config.json').write_text('{not json')
+        base, out = self.start()
+        self.assertIn('使用默认配置', out)
+        self.assertEqual(call(base + '/admin')[0], 200)
+        self.assertEqual(len(list(data.glob('config.broken-*.json'))), 1)
+
+    def test_non_loopback_bind_keeps_tokens_and_login(self):
         base, out = self.start('--bind', '0.0.0.0', '--public-base', 'http://192.0.2.1:1907')
-        self.assertEqual(base, 'http://192.0.2.1:1907')
-        self.assertIn('需管理员令牌', out)
-        port = re.search(r'监听 [^:]+:(\d+)', out).group(1)
-        self.assertEqual(call('http://127.0.0.1:' + port + '/admin')[0], 303)
-        self.assertEqual(call('http://127.0.0.1:' + port + '/api/session')[0], 401)
+        self.assertIn('管理员令牌见', out)
+        self.assertRegex(out, r'订阅地址: http://192\.0\.2\.1:1907/s/[A-Za-z0-9_-]{24,}/interface\.m3u')
+        self.assertEqual(call(base + '/admin')[0], 303)
+        self.assertEqual(call(base + '/api/session')[0], 401)
+        self.assertEqual(call(base + '/interface.m3u')[0], 404)
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 import concurrent.futures
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
-from .config import ConfigStore
+from .config import ConfigError, ConfigStore
 from .net import MEDIA_SUFFIXES as PLATFORM_MEDIA
+from .models import ProviderError
 from .providers import CATEGORIES, LABELS, default_providers
 
 ROOM = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -60,6 +62,12 @@ def safe_logo(url):
     return url if ok else ''
 
 
+def describe(error):
+    """Loggable reason: provider messages are fixed strings without URLs."""
+    name = type(error).__name__
+    return f'{name}: {clean_text(error)[:120]}' if isinstance(error, ProviderError) and str(error) else name
+
+
 def clean_text(value):
     return ''.join(c for c in str(value) if ord(c) >= 32 and ord(c) != 127).replace('"', "'")[:300]
 
@@ -78,6 +86,10 @@ class Engine:
         self.updated = 0
         self.generation = 0
         self.config_revision = 0
+        # Embeddings may replace these: a line logger (never given URLs or
+        # credentials) and extra header lines for the generated playlist.
+        self.log = lambda message: None
+        self.playlist_directives = ()
 
     def invalidate(self):
         # Revoke old channels/URLs immediately when management changes settings.
@@ -117,7 +129,11 @@ class Engine:
                             selected[(platform, str(ch.room_id))] = ch
                     updated.update(selected)
                     health[platform] = {'enabled': True, 'status': 'ok', 'count': len(selected), 'cached': False, 'last_success': int(time.time()), 'warnings': list(dict.fromkeys(getattr(provider, 'warnings', [])))[:20]}
-                except Exception:
+                    self.log(f'[刷新] {LABELS.get(platform, platform)}: {len(selected)} 个频道')
+                    for warning in health[platform]['warnings']:
+                        self.log(f'[刷新] {LABELS.get(platform, platform)} 提示: {clean_text(warning)}')
+                except Exception as error:
+                    self.log(f'[刷新] {LABELS.get(platform, platform)} 失败 ({describe(error)})，保留上次列表')
                     with self.lock:
                         old = {key: val for key, val in self.channels.items() if key[0] == platform}
                     updated.update(old)
@@ -167,7 +183,8 @@ class Engine:
 
     def playlist(self, public_base, sub_token):
         self.maybe_refresh()
-        lines = ['#EXTM3U']
+        lines = ['#EXTM3U', *self.playlist_directives]
+        prefix = f'{public_base}/s/{sub_token}' if sub_token else public_base
         with self.lock:
             if not self.channels and (self.updated == 0 or any(v.get('status') == 'error' for v in self.health.values())):
                 if any(c.get('enabled') for c in self.store.get().values()):
@@ -177,7 +194,7 @@ class Engine:
                 title = clean_text(ch.name) + (' · ' + clean_text(ch.title) if ch.title else '')
                 logo = safe_logo(ch.logo)
                 attrs = f'tvg-id="{p}-{r}"' + (f' tvg-logo="{logo}"' if logo else '')
-                lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{public_base}/s/{sub_token}/live/{p}/{r}'])
+                lines.extend([f'#EXTINF:-1 {attrs} group-title="{group}",{title}', f'{prefix}/live/{p}/{r}'])
         return ('\n'.join(lines) + '\n').encode()
 
     def douyu_diagnostic_playlist(self, public_base, sub_token):
@@ -192,7 +209,7 @@ class Engine:
                 raise LookupError()
             room, channel = first
             title = clean_text(channel.name)
-        prefix = f'{public_base}/s/{sub_token}'
+        prefix = f'{public_base}/s/{sub_token}' if sub_token else public_base
         lines = ['#EXTM3U']
         for label, route in (
                 ('baseline', f'live/douyu/{room}'),
@@ -287,13 +304,20 @@ class Engine:
 
 
 class Application:
-    def __init__(self, store, admin_token, sub_token, public_base, engine=None, auth_enabled=True):
+    def __init__(self, store, admin_token, sub_token, public_base, engine=None, auth_enabled=True, local=False):
+        # local: this-device-only mode. No tokens or login; instead every
+        # request must come from a loopback peer and name a loopback Host
+        # (which also defeats DNS rebinding from a browser on the device).
+        self.local = local
+        if local:
+            auth_enabled, admin_token, sub_token = False, '', ''
         self.auth_enabled = auth_enabled
         self.open_csrf = secrets.token_urlsafe(32)
-        if (auth_enabled and len(admin_token) < 24) or len(sub_token) < 24 or not re.fullmatch(r'[A-Za-z0-9_-]{24,128}', sub_token):
-            raise ValueError('tokens must be independent and at least 24 characters')
-        if hmac.compare_digest(admin_token, sub_token):
-            raise ValueError('tokens must differ')
+        if not local:
+            if (auth_enabled and len(admin_token) < 24) or len(sub_token) < 24 or not re.fullmatch(r'[A-Za-z0-9_-]{24,128}', sub_token):
+                raise ValueError('tokens must be independent and at least 24 characters')
+            if hmac.compare_digest(admin_token, sub_token):
+                raise ValueError('tokens must differ')
         if any(ord(c) <= 32 or ord(c) == 127 for c in public_base) or '\\' in public_base:
             raise ValueError('invalid PUBLIC_BASE')
         p = urlsplit(public_base)
@@ -303,9 +327,27 @@ class Application:
         self.store, self.engine = store, engine or Engine(store)
         self.admin_digest = hashlib.sha256(admin_token.encode()).digest()
         self.sub_token, self.base = sub_token, public_base.rstrip('/')
+        self.port = p.port or (443 if p.scheme == 'https' else 80)
         self.sessions = {}
         self.session_lock = threading.Lock()
         self.login_attempts = {}
+
+    def request_base(self, host, client):
+        """Origin this request should be answered for, or None to refuse it."""
+        if not self.local:
+            return self.base
+        try:
+            peer = ipaddress.ip_address(client)
+            peer = getattr(peer, 'ipv4_mapped', None) or peer
+        except ValueError:
+            return None
+        name, _, port = (host or '').rpartition(':')
+        if not peer.is_loopback or port != str(self.port) or name not in ('127.0.0.1', 'localhost', '[::1]'):
+            return None
+        return 'http://' + host
+
+    def subscription_prefix(self, base):
+        return base if self.local else base + '/s/' + self.sub_token
 
     def login(self, token, client):
         now = time.monotonic()
@@ -385,17 +427,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404)
         if path == '/health' and self.command in ('GET', 'HEAD'):
             return self.reply(200, b'ok')
+        base = self.app.request_base(self.headers.get('Host'), self.client_address[0])
+        if base is None:
+            return self.reply(403)
         if not self.app.auth_enabled and path == '/login':
             return self.reply(303, headers={'Location': '/admin'})
         if self.command == 'POST' and path == '/login':
             origin = self.headers.get('Origin')
-            if origin and origin != self.app.base:
+            if origin and origin != base:
                 return self.reply(403)
             form = parse_qs(self.body().decode())
             sid = self.app.login(form.get('admin_token', [''])[0], self.client_address[0])
             if not sid:
                 return self.reply(403, '登录失败或尝试过于频繁'.encode())
-            secure = '; Secure' if self.app.base.startswith('https:') else ''
+            secure = '; Secure' if base.startswith('https:') else ''
             return self.reply(303, headers={'Location': '/admin', 'Set-Cookie': 'ld_session=' + sid + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200' + secure})
         session = self.app.session(self.headers.get('Cookie')) if self.app.auth_enabled else (float('inf'), self.app.open_csrf)
         admin_pages = ('/', '/admin') + tuple('/admin/' + platform for platform in self.app.engine.providers)
@@ -427,9 +472,9 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/channels':
                     return self.json_reply(200, {'channels': self.app.engine.list_channels()})
                 if path == '/api/subscription':
-                    return self.json_reply(200, {'url': self.app.base + '/s/' + self.app.sub_token + '/interface.m3u'})
+                    return self.json_reply(200, {'url': self.app.subscription_prefix(base) + '/interface.m3u'})
             if self.command == 'POST':
-                if self.headers.get('Origin') not in (None, self.app.base) or not hmac.compare_digest(self.headers.get('X-CSRF-Token', ''), session[1]):
+                if self.headers.get('Origin') not in (None, base) or not hmac.compare_digest(self.headers.get('X-CSRF-Token', ''), session[1]):
                     return self.reply(403)
                 if path == '/api/logout':
                     if not self.app.auth_enabled:
@@ -437,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
                     jar = cookies.SimpleCookie(self.headers.get('Cookie', ''))
                     with self.app.session_lock:
                         self.app.sessions.pop(jar['ld_session'].value, None)
-                    secure = '; Secure' if self.app.base.startswith('https:') else ''
+                    secure = '; Secure' if base.startswith('https:') else ''
                     return self.reply(204, headers={'Set-Cookie': 'ld_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' + secure})
                 if path == '/api/config':
                     patch = json.loads(self.body())
@@ -469,18 +514,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(200, res)
             return self.reply(404)
         parts = path.split('/')
+        if self.app.local:
+            # Same routes without the /s/<token> prefix.
+            parts = ['', 's', ''] + parts[1:]
         if len(parts) >= 4 and parts[1] == 's' and hmac.compare_digest(parts[2].encode(), self.app.sub_token.encode()):
             if self.command not in ('GET', 'HEAD'):
                 return self.reply(405)
             if len(parts) == 4 and parts[3] == 'interface.m3u':
                 try:
-                    playlist = self.app.engine.playlist(self.app.base, self.app.sub_token)
+                    playlist = self.app.engine.playlist(base, self.app.sub_token)
                 except RuntimeError:
                     return self.reply(503, b'Channels updating; retry shortly', headers={'Retry-After': '5'})
                 return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
             if parts[3:] == ['diagnostics', 'douyu.m3u']:
                 try:
-                    playlist = self.app.engine.douyu_diagnostic_playlist(self.app.base, self.app.sub_token)
+                    playlist = self.app.engine.douyu_diagnostic_playlist(base, self.app.sub_token)
                 except LookupError:
                     return self.reply(404)
                 return self.reply(200, playlist, 'audio/x-mpegurl; charset=utf-8')
@@ -501,17 +549,23 @@ class Handler(BaseHTTPRequestHandler):
                     stream = self.app.engine.resolve(parts[4], parts[5], hls=parts[3] == 'hls')
                 except LookupError:
                     return self.reply(404)
-                except Exception:
+                except Exception as error:
+                    self.app.engine.log(f'[播放] {parts[4]}/{parts[5]} 解析失败 ({describe(error)})')
                     return self.reply(503)
+                self.app.engine.log(f'[播放] {parts[4]}/{parts[5]} -> {stream.format}')
                 return self.reply(302, headers={'Location': stream.url})
         return self.reply(404)
 
     def _safe(self):
         try:
             self.serve()
-        except (ValueError, TypeError, json.JSONDecodeError):
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            # ConfigError texts name the rejected field, never its value.
+            if isinstance(error, ConfigError):
+                self.app.engine.log(f'[配置] 保存被拒绝: {clean_text(error)[:120]}')
             self.reply(400)
-        except Exception:
+        except Exception as error:
+            self.app.engine.log(f'[请求] 处理出错 ({type(error).__name__})')
             self.close_connection = True
 
     do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_OPTIONS = _safe
