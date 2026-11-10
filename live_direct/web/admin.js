@@ -657,6 +657,25 @@
     finally { lock(false); }
   });
   byId('channel-search').addEventListener('input', event => { state.query = event.target.value; renderChannels(); });
+  async function exportAptv() {
+    if (isDirty()) { toast('有未保存的更改，请先保存再导出。', 'error'); return; }
+    const button = byId('export-aptv');
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/export/aptv', { method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf }, body: '{}' });
+      if (response.status === 401) { window.location.assign('/login'); return; }
+      if (!response.ok) throw new Error(response.status === 404 ? '当前环境不支持导出。' : '导出失败，请稍后重试。');
+      const name = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || 'live-direct-aptv.py';
+      const url = URL.createObjectURL(await response.blob());
+      const link = h('a', { href: url, download: name });
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      toast(state.config?.bilibili?.sessdata_set ? '已导出。脚本内含 B站登录凭据，请勿公开分享。' : '已导出，在 APTV 中作为服务导入即可。', 'success');
+    } catch (error) { toast(error.message || '导出失败，请稍后重试。', 'error'); }
+    finally { button.disabled = false; }
+  }
+  byId('export-aptv').addEventListener('click', exportAptv);
   byId('copy-subscription').addEventListener('click', copySubscription);
   byId('copy-subscription-2').addEventListener('click', copySubscription);
   byId('logout').addEventListener('click', async () => {
@@ -676,6 +695,7 @@
       const session = await api('/api/session');
       if (typeof session.csrf !== 'string' || !session.csrf) throw new Error('安全会话尚未就绪，请重新登录。');
       state.csrf = session.csrf;
+      byId('export-aptv').disabled = false;
       if (session.auth_enabled === false) { byId('logout').hidden = true; byId('open-warning').hidden = false; }
       const [config, meta] = await Promise.all([api('/api/config'), api('/api/meta').catch(() => ({}))]);
       for (const item of Array.isArray(meta.platforms) ? meta.platforms : []) {

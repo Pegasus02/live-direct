@@ -134,13 +134,32 @@ class BundleTests(unittest.TestCase):
         self.assertEqual(saved['huya']['categories'], ['100023'])
         self.assertEqual(saved['huya']['count'], 5)
 
+    def test_built_in_settings_apply_and_environment_wins(self):
+        from live_direct.config import DEFAULTS
+        import copy
+        config = copy.deepcopy(DEFAULTS)
+        config['huya'].update(enabled=True, rooms=['kpl'], count=3)
+        self.script = build_aptv.build(self.dir / 'configured.py', config)
+        base, out = self.start()
+        self.assertIn('配置来源: 内置配置', out)
+        self.assertIn('[配置] 内置配置 虎牙: 已启用，1 个主播，0 个分类', out)
+        self.assertIn('已启用平台: 虎牙', out)
+        # A copy running inside APTV cannot export itself again.
+        csrf = json.loads(call(base + '/api/session')[1])['csrf']
+        self.assertEqual(call(base + '/api/export/aptv', b'{}', {'X-CSRF-Token': csrf, 'Origin': base})[0], 404)
+        self.tearDown(); self.setUp()
+        self.script = build_aptv.build(self.dir / 'configured.py', config)
+        _, out = self.start(extra_env={'DOUYU_ROOMS': '9999'})
+        self.assertIn('配置来源: 环境变量', out)
+        self.assertIn('已启用平台: 斗鱼', out)
+
     def test_bad_environment_value_stops_with_its_name(self):
         env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
         env['DOUYU_COUNT'] = 'many'
         proc = subprocess.run([sys.executable, '-I', '-B', str(self.script), '0'], cwd=self.dir, env=env,
                               capture_output=True, text=True, timeout=20)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn('DOUYU_COUNT: 格式不对', proc.stdout + proc.stderr)
+        self.assertIn('设置有误: DOUYU_COUNT: 格式不对', proc.stdout + proc.stderr)
 
     def test_corrupt_config_is_set_aside(self):
         data = self.dir / 'live-direct-data'

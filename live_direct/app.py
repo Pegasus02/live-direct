@@ -510,6 +510,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.json_reply(200, result)
                 if path == '/api/refresh':
                     return self.json_reply(200, {'accepted': self.app.engine.start_refresh()})
+                if path == '/api/export/aptv':
+                    # The single-file script with the current settings (including
+                    # a Bilibili login, if any) built in; CSRF-checked like any POST.
+                    from . import bundle
+                    if not bundle.available():
+                        return self.reply(404)
+                    stamp = time.strftime('%Y%m%d-%H%M')
+                    script = bundle.render(f'export {stamp}', self.app.store.get()).encode()
+                    self.app.engine.log('[配置] 已导出 APTV 脚本')
+                    return self.reply(200, script, 'text/x-python; charset=utf-8',
+                                      {'Content-Disposition': f'attachment; filename="live-direct-aptv-{stamp}.py"'})
                 if path == '/api/bilibili/qrcode/generate':
                     provider = self.app.engine.providers.get('bilibili')
                     if not provider or not hasattr(provider, 'qrcode_generate'):

@@ -24,6 +24,22 @@ class HTTPTests(unittest.TestCase):
         c.request(method, path, body, headers or {})
         r = c.getresponse(); out = (r.status, dict(r.getheaders()), r.read()); c.close()
         return out
+    def test_export_aptv_script_carries_current_settings(self):
+        import ast, json
+        s, h, _ = self.req('POST', '/login', urlencode({'admin_token': 'a'*32}), {'Content-Type': 'application/x-www-form-urlencoded'})
+        cookie = h['Set-Cookie'].split(';')[0]
+        csrf = json.loads(self.req('GET', '/api/session', headers={'Cookie': cookie})[2])['csrf']
+        self.store.update({'douyu': {'enabled': True, 'rooms': ['9999']}, 'bilibili': {'sessdata': 'secretvalue'}})
+        self.assertEqual(self.req('POST', '/api/export/aptv', '{}', {'Cookie': cookie})[0], 403)
+        self.assertEqual(self.req('POST', '/api/export/aptv', '{}', {'X-CSRF-Token': csrf})[0], 401)
+        s, h, body = self.req('POST', '/api/export/aptv', '{}', {'Cookie': cookie, 'X-CSRF-Token': csrf, 'Content-Type': 'application/json'})
+        self.assertEqual(s, 200)
+        self.assertRegex(h['Content-Disposition'], r'^attachment; filename="live-direct-aptv-[0-9-]+\.py"$')
+        tree = ast.parse(body.decode())
+        config = next(ast.literal_eval(n.value) for n in tree.body
+                      if isinstance(n, ast.Assign) and getattr(n.targets[0], 'id', '') == '_CONFIG')
+        self.assertEqual(config, self.store.get())
+        self.assertEqual(config['bilibili']['sessdata'], 'secretvalue')
     def test_client_disconnect_is_not_logged_as_error(self):
         from unittest import mock
         from live_direct import app as app_module

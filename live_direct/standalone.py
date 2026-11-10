@@ -36,6 +36,8 @@ APTV_DIRECTIVES = ('#EXT-X-APTV-PREVIEW: FALSE', '#EXT-X-APTV-LATENCY: FALSE')
 # The single-file build sets this to its own path; hosts such as APTV exec the
 # script from their runner, so __main__ may not be the script itself.
 SCRIPT_PATH = ''
+# Settings an admin export built into the script; applied on every start.
+EMBEDDED_CONFIG = None
 
 _log_lock = threading.Lock()
 _log_last = {}
@@ -208,14 +210,17 @@ def env_config(environ):
     return patch
 
 
-def apply_env(store, environ):
-    patch = env_config(environ)
+def apply_settings(store, environ):
+    """Apply environment or built-in settings; returns where they came from."""
+    patch, source = env_config(environ), '环境变量'
+    if patch is None and EMBEDDED_CONFIG:
+        patch, source = EMBEDDED_CONFIG, '内置配置'
     if patch is None:
-        return False
+        return ''
     store.update(patch)
     for platform, cfg in store.get().items():
-        log(f'[配置] 环境变量 {LABELS.get(platform, platform)}: {describe_config(cfg)}', min_interval=0)
-    return True
+        log(f'[配置] {source} {LABELS.get(platform, platform)}: {describe_config(cfg)}', min_interval=0)
+    return source
 
 
 def build(argv=None):
@@ -224,10 +229,10 @@ def build(argv=None):
     local = is_loopback(args.bind)
     store = open_store(data)
     try:
-        from_env = apply_env(store, os.environ)
+        source = apply_settings(store, os.environ)
     except ConfigError as error:
-        log(f'[配置] 环境变量有误: {error}', min_interval=0)
-        raise SystemExit(f'[live-direct] 环境变量有误: {error}') from None
+        log(f'[配置] 设置有误: {error}', min_interval=0)
+        raise SystemExit(f'[live-direct] 设置有误: {error}') from None
     if local:
         app = Application(store, '', '', f'http://127.0.0.1:{args.port}', local=True)
     else:
@@ -241,7 +246,7 @@ def build(argv=None):
         # Port 0 asks the OS for a free port.
         app.port = srv.server_address[1]
         app.base = f'http://127.0.0.1:{app.port}'
-    app.from_env = from_env
+    app.settings_source = source
     return srv, app, data
 
 
@@ -258,7 +263,7 @@ def main(argv=None):
               f'订阅地址: {app.subscription_prefix(app.base)}/interface.m3u',
               f'管理后台: {app.base}/admin ' + ('(仅本机，免登录)' if app.local else f'(管理员令牌见 {data / SECRETS_FILE})'),
               f'配置目录: {data}',
-              '配置来源: ' + ('环境变量（后台的修改在重启后会被环境变量覆盖）' if app.from_env else '管理后台'),
+              '配置来源: ' + (f'{app.settings_source}（后台的修改在重启后会被覆盖）' if app.settings_source else '管理后台'),
               '已启用平台: ' + ('、'.join(enabled) if enabled else '无。请先打开管理后台启用平台并添加主播'),
               '==============================================']
     for line in banner:
