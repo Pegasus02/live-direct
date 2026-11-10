@@ -65,6 +65,17 @@ class BundleTests(unittest.TestCase):
         self.assertIsNotNone(port, out)
         return 'http://127.0.0.1:' + port.group(1), out
 
+    def read_until(self, proc, text):
+        lines = []
+        while len(lines) < 40:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            lines.append(line)
+            if text in line:
+                break
+        return ''.join(lines)
+
     def test_local_mode_needs_no_token(self):
         base, out = self.start()
         self.assertIn(f'订阅地址: {base}/interface.m3u', out)
@@ -83,6 +94,7 @@ class BundleTests(unittest.TestCase):
         status, _ = call(base + '/api/config', json.dumps({'douyin': {'count': 3}}).encode(),
                          {'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'Origin': base})
         self.assertEqual(status, 200)
+        self.assertIn('[配置] 已保存 抖音: 已关闭，0 个主播，0 个分类', self.read_until(self.procs[-1], '已保存'))
         data = self.dir / 'live-direct-data'
         self.assertEqual(json.loads((data / 'config.json').read_text())['douyin']['count'], 3)
         self.assertFalse((data / 'standalone-secrets.json').exists())

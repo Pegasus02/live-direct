@@ -80,6 +80,12 @@ def has_sources(config):
     return any(config.get(key) for key in SOURCE_KEYS)
 
 
+def describe_config(config):
+    rooms = len(config.get('rooms') or []) + len(config.get('share_links') or [])
+    groups = len(config.get('categories') or config.get('areas') or [])
+    return ('已启用' if config.get('enabled') else '已关闭') + f'，{rooms} 个主播，{groups} 个分类'
+
+
 class Engine:
     def __init__(self, store, providers=None):
         self.store = store
@@ -498,6 +504,8 @@ class Handler(BaseHTTPRequestHandler):
                     with self.app.engine.lock:
                         result = self.app.store.update(patch)
                         self.app.engine.invalidate()
+                    for platform in (p for p in result if isinstance(patch, dict) and p in patch):
+                        self.app.engine.log(f'[配置] 已保存 {LABELS.get(platform, platform)}: {describe_config(result[platform])}')
                     self.app.engine.start_refresh()
                     return self.json_reply(200, result)
                 if path == '/api/refresh':
