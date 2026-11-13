@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 
+from . import mcp
 from .config import ConfigError, ConfigStore
 from .net import MEDIA_SUFFIXES as PLATFORM_MEDIA
 from .models import ProviderError
@@ -102,8 +103,20 @@ class Engine:
         self.config_revision = 0
         # Embeddings may replace these: a line logger (never given URLs or
         # credentials) and extra header lines for the generated playlist.
-        self.log = lambda message: None
+        self.log = self._default_log
         self.playlist_directives = ()
+        self.log_lines = []
+
+    def _default_log(self, message):
+        line = time.strftime('[%H:%M:%S] ') + str(message)
+        with self.lock:
+            self.log_lines.append(line)
+            del self.log_lines[:-300]
+        print(line, flush=True)
+
+    def recent_logs(self, limit=50):
+        with self.lock:
+            return list(self.log_lines[-limit:])
 
     def invalidate(self):
         # Revoke old channels/URLs immediately when management changes settings.
@@ -385,6 +398,16 @@ class Application:
             self.sessions[sid] = (now + 43200, csrf)
             return sid
 
+    def mcp_authorized(self, header):
+        """MCP needs the admin token; local (token-free) mode trusts the device."""
+        if not self.auth_enabled:
+            return True
+        value = (header or '').strip()
+        if not value.lower().startswith('bearer '):
+            return False
+        digest = hashlib.sha256(value[7:].strip().encode()).digest()
+        return hmac.compare_digest(digest, self.admin_digest)
+
     def session(self, header):
         try:
             jar = cookies.SimpleCookie(header or '')
@@ -437,12 +460,29 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError()
         return self.rfile.read(n)
 
+    def serve_mcp(self):
+        if self.command != 'POST':
+            return self.reply(405, b'', headers={'Allow': 'POST'})
+        if not self.app.mcp_authorized(self.headers.get('Authorization')):
+            return self.reply(401, b'', headers={'WWW-Authenticate': 'Bearer realm="live-direct"'})
+        try:
+            payload = json.loads(self.body().decode())
+        except (ValueError, UnicodeDecodeError):
+            return self.json_reply(400, {'jsonrpc': '2.0', 'id': None,
+                                         'error': {'code': -32700, 'message': 'parse error'}})
+        status, result = mcp.dispatch(self.app, payload)
+        if result is None:
+            return self.reply(status)
+        return self.json_reply(status, result)
+
     def serve(self):
         path = self.path
         if len(path) > 2048 or '?' in path or '%' in path:
             return self.reply(404)
         if path == '/health' and self.command in ('GET', 'HEAD'):
             return self.reply(200, b'ok')
+        if path == '/mcp':
+            return self.serve_mcp()
         base = self.app.request_base(self.headers.get('Host'), self.client_address[0])
         if base is None:
             return self.reply(403)
@@ -664,6 +704,8 @@ def main():
     if fixed not in ('true', 'false'):
         raise ValueError('FIXED_SUBSCRIPTION_ENABLED must be true or false')
     app = Application(ConfigStore(data / 'config.json'), os.environ.get('ADMIN_TOKEN', ''), os.environ['SUBSCRIPTION_TOKEN'], os.environ['PUBLIC_BASE'], auth_enabled=auth == 'true', fixed_subscription=fixed == 'true')
+    if auth != 'true':
+        app.engine.log('[警告] ADMIN_AUTH_ENABLED=false：/admin 与 /mcp 均免登录，仅限可信局域网')
     with Server(('0.0.0.0', int(os.environ.get('PORT', '8080'))), app) as srv:
         # Warm the channel list so the first player request is not a cold 503.
         app.engine.start_refresh()
